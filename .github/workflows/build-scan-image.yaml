@@ -32,27 +32,32 @@ jobs:
         id: meta
         run: |
           echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "ttl_repo=ttl.sh/stuttgart-things/provider-kubeconfig" >> $GITHUB_OUTPUT
 
       - name: Build & push to ttl.sh
-        uses: dagger/dagger-for-github@v8.4.0
+        uses: dagger/dagger-for-github@v6
         with:
+          version: "0.20.0"
+          verb: call
           module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
-          call: >-
+          args: >-
             bake-image
             --src .
             --repository-name stuttgart-things/provider-kubeconfig
             --tag ${{ steps.meta.outputs.commit }}
             --registry-url ttl.sh
             --dockerfile cluster/images/provider-kubeconfig/Dockerfile
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
       - name: Scan image
-        uses: dagger/dagger-for-github@v8.4.0
+        uses: dagger/dagger-for-github@v6
         with:
+          version: "0.20.0"
+          verb: call
           module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
-          call: >-
+          args: >-
             scan-image
-            --image-ref ${{ steps.meta.outputs.ttl_repo }}:${{ steps.meta.outputs.commit }}
+            --image-ref ttl.sh/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.commit }}
             --severity HIGH,CRITICAL
-          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+        env:
+          DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
