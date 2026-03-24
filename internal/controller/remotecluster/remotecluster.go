@@ -44,6 +44,7 @@ import (
 
 	v1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/kubeconfig/v1alpha1"
 	apisv1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/v1alpha1"
+	clusterpkg "github.com/stuttgart-things/provider-kubeconfig/internal/cluster"
 	decryptpkg "github.com/stuttgart-things/provider-kubeconfig/internal/decrypt"
 	gitpkg "github.com/stuttgart-things/provider-kubeconfig/internal/git"
 )
@@ -396,10 +397,22 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	}
 
 	cr.SetConditions(xpv2.Available())
-	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
+	obs := v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
 		SecretRef:   name,
 	}
+
+	// Best-effort: gather remote cluster info from the kubeconfig
+	if info, err := clusterpkg.Gather(ctx, secret.Data["kubeconfig"]); err == nil {
+		obs.ServerVersion = info.ServerVersion
+		obs.APIEndpoint = info.APIEndpoint
+		obs.PodCIDR = info.PodCIDR
+		obs.ServiceCIDR = info.ServiceCIDR
+		obs.NodeCIDRs = info.NodeCIDRs
+		obs.NodeCount = info.NodeCount
+	}
+
+	cr.Status.AtProvider = obs
 
 	return managed.ExternalObservation{
 		ResourceExists:   true,
