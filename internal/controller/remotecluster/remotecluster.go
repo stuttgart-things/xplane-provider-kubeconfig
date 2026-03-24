@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 
 	"github.com/pkg/errors"
@@ -39,6 +40,7 @@ import (
 
 	v1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/kubeconfig/v1alpha1"
 	apisv1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/v1alpha1"
+	decryptpkg "github.com/stuttgart-things/provider-kubeconfig/internal/decrypt"
 	gitpkg "github.com/stuttgart-things/provider-kubeconfig/internal/git"
 )
 
@@ -48,8 +50,10 @@ const (
 	errGetPC            = "cannot get ProviderConfig"
 	errGetCPC           = "cannot get ClusterProviderConfig"
 	errGetGitSecret     = "cannot get Git auth secret"
+	errGetDecryptSecret = "cannot get decryption key secret"
 	errCloneRepo        = "cannot clone/pull git repository"
 	errReadFile         = "cannot read file from git repository"
+	errDecryptFile      = "cannot decrypt file"
 	errCreateSecret     = "cannot create kubeconfig Secret"
 	errGetSecret        = "cannot get kubeconfig Secret"
 	errDeleteSecret     = "cannot delete kubeconfig Secret"
@@ -161,13 +165,26 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		gitToken = string(secret.Data["token"])
 	}
 
-	return &external{kube: c.kube, providerSpec: spec, gitToken: gitToken}, nil
+	// Read the decryption key from the referenced Secret
+	var ageKey string
+	decryptRef := spec.Decryption.SecretRef
+	secret := &corev1.Secret{}
+	if err := c.kube.Get(ctx, types.NamespacedName{
+		Name:      decryptRef.Name,
+		Namespace: decryptRef.Namespace,
+	}, secret); err != nil {
+		return nil, errors.Wrap(err, errGetDecryptSecret)
+	}
+	ageKey = string(secret.Data["key"])
+
+	return &external{kube: c.kube, providerSpec: spec, gitToken: gitToken, ageKey: ageKey}, nil
 }
 
 type external struct {
 	kube         client.Client
 	providerSpec apisv1alpha1.ProviderConfigSpec
 	gitToken     string
+	ageKey       string
 }
 
 // secretName returns a deterministic Secret name for the RemoteCluster.
@@ -175,7 +192,8 @@ func secretName(crName string) string {
 	return fmt.Sprintf("kubeconfig-%s", crName)
 }
 
-// cloneAndReadFile clones/pulls the Git repo and reads the file at source.path.
+// cloneAndReadFile clones/pulls the Git repo, reads the file at source.path,
+// and decrypts it if an age key is configured.
 func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byte, error) {
 	repo := gitpkg.NewRepo(c.providerSpec.Git.URL, c.providerSpec.Git.Branch, c.gitToken)
 
@@ -186,6 +204,15 @@ func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byt
 	content, err := repo.ReadFile(filePath)
 	if err != nil {
 		return nil, errors.Wrap(err, errReadFile)
+	}
+
+	// Decrypt if an age key is available
+	if c.ageKey != "" {
+		decrypted, err := decryptpkg.SOPSDecrypt(content, filePath, c.ageKey)
+		if err != nil {
+			return nil, errors.Wrap(err, errDecryptFile)
+		}
+		return decrypted, nil
 	}
 
 	return content, nil
@@ -212,6 +239,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.Wrap(err, errGetSecret)
 	}
 
+	cr.SetConditions(xpv2.Available())
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
 		SecretRef:   name,

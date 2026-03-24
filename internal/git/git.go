@@ -60,7 +60,7 @@ func NewRepo(url, branch, token string) *Repo {
 	if branch == "" {
 		branch = "main"
 	}
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(url)))[:16]
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(url+"@"+branch)))[:16]
 	cacheDir := filepath.Join(os.TempDir(), "provider-kubeconfig", hash)
 	return &Repo{url: url, branch: branch, token: token, cacheDir: cacheDir}
 }
