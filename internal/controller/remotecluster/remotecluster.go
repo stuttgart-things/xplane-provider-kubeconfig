@@ -18,6 +18,7 @@ package remotecluster
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 
 	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
@@ -27,6 +28,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,19 +49,32 @@ import (
 )
 
 const (
-	errNotRemoteCluster = "managed resource is not a RemoteCluster custom resource"
-	errTrackPCUsage     = "cannot track ProviderConfig usage"
-	errGetPC            = "cannot get ProviderConfig"
-	errGetCPC           = "cannot get ClusterProviderConfig"
-	errGetGitSecret     = "cannot get Git auth secret"
-	errGetDecryptSecret = "cannot get decryption key secret"
-	errCloneRepo        = "cannot clone/pull git repository"
-	errReadFile         = "cannot read file from git repository"
-	errDecryptFile      = "cannot decrypt file"
-	errCreateSecret     = "cannot create kubeconfig Secret"
-	errGetSecret        = "cannot get kubeconfig Secret"
-	errDeleteSecret     = "cannot delete kubeconfig Secret"
+	errNotRemoteCluster    = "managed resource is not a RemoteCluster custom resource"
+	errTrackPCUsage        = "cannot track ProviderConfig usage"
+	errGetPC               = "cannot get ProviderConfig"
+	errGetCPC              = "cannot get ClusterProviderConfig"
+	errGetGitSecret        = "cannot get Git auth secret"
+	errGetDecryptSecret    = "cannot get decryption key secret"
+	errCloneRepo           = "cannot clone/pull git repository"
+	errReadFile            = "cannot read file from git repository"
+	errDecryptFile         = "cannot decrypt file"
+	errCreateSecret        = "cannot create kubeconfig Secret"
+	errGetSecret           = "cannot get kubeconfig Secret"
+	errUpdateSecret        = "cannot update kubeconfig Secret"
+	errDeleteSecret        = "cannot delete kubeconfig Secret"
+	errCreateProviderCfg   = "cannot create downstream ProviderConfig"
+	errDeleteProviderCfg   = "cannot delete downstream ProviderConfig"
+	errListProviderCfg     = "cannot list downstream ProviderConfigs"
+
+	annotationContentHash = "kubeconfig.stuttgart-things.com/content-hash"
+	labelManagedBy        = "app.kubernetes.io/managed-by"
+	labelRemoteCluster    = "remotecluster.kubeconfig.stuttgart-things.com/name"
 )
+
+var providerConfigGVK = map[string]schema.GroupVersionKind{
+	"provider-kubernetes": {Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"},
+	"provider-helm":      {Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
+}
 
 // SetupGated adds a controller that reconciles RemoteCluster managed resources with safe-start support.
 func SetupGated(mgr ctrl.Manager, o controller.Options) error {
@@ -192,6 +209,11 @@ func secretName(crName string) string {
 	return fmt.Sprintf("kubeconfig-%s", crName)
 }
 
+// contentHash returns the hex-encoded SHA-256 hash of data.
+func contentHash(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
 // cloneAndReadFile clones/pulls the Git repo, reads the file at source.path,
 // and decrypts it if an age key is configured.
 func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byte, error) {
@@ -218,6 +240,123 @@ func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byt
 	return content, nil
 }
 
+// buildDownstreamProviderConfig builds an unstructured downstream ProviderConfig
+// for provider-kubernetes or provider-helm.
+func buildDownstreamProviderConfig(pcRef v1alpha1.ProviderConfigRef, secretName, secretNamespace, crName string) (*unstructured.Unstructured, error) {
+	gvk, ok := providerConfigGVK[pcRef.Type]
+	if !ok {
+		return nil, errors.Errorf("unsupported downstream provider type: %s", pcRef.Type)
+	}
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	u.SetName(pcRef.Name)
+	u.SetLabels(map[string]string{
+		labelManagedBy:     "provider-kubeconfig",
+		labelRemoteCluster: crName,
+	})
+
+	if err := unstructured.SetNestedMap(u.Object, map[string]interface{}{
+		"source": "Secret",
+		"secretRef": map[string]interface{}{
+			"name":      secretName,
+			"namespace": secretNamespace,
+			"key":       "kubeconfig",
+		},
+	}, "spec", "credentials"); err != nil {
+		return nil, errors.Wrap(err, "cannot set credentials in downstream ProviderConfig")
+	}
+
+	return u, nil
+}
+
+// ensureDownstreamProviderConfigs creates any missing downstream ProviderConfigs
+// and deletes stale ones that are no longer in the spec.
+func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1alpha1.RemoteCluster, sName, sNamespace string) error {
+	desired := make(map[string]v1alpha1.ProviderConfigRef)
+	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
+		desired[pc.Name] = pc
+
+		u, err := buildDownstreamProviderConfig(pc, sName, sNamespace, cr.GetName())
+		if err != nil {
+			return err
+		}
+
+		existing := &unstructured.Unstructured{}
+		existing.SetGroupVersionKind(u.GroupVersionKind())
+		err = c.kube.Get(ctx, types.NamespacedName{Name: pc.Name}, existing)
+		if kerrors.IsNotFound(err) {
+			if err := c.kube.Create(ctx, u); err != nil {
+				return errors.Wrapf(err, "%s %q", errCreateProviderCfg, pc.Name)
+			}
+			continue
+		}
+		if err != nil {
+			return errors.Wrapf(err, "cannot check downstream ProviderConfig %q", pc.Name)
+		}
+	}
+
+	// Delete stale ProviderConfigs that have our label but are no longer desired
+	for _, gvk := range providerConfigGVK {
+		if err := c.deleteStaleProviderConfigs(ctx, gvk, cr.GetName(), desired); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deleteStaleProviderConfigs deletes ProviderConfigs with the ownership label
+// that are no longer in the desired set.
+func (c *external) deleteStaleProviderConfigs(ctx context.Context, gvk schema.GroupVersionKind, crName string, desired map[string]v1alpha1.ProviderConfigRef) error {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(gvk)
+	selector := labels.SelectorFromSet(labels.Set{
+		labelRemoteCluster: crName,
+	})
+	if err := c.kube.List(ctx, list, &client.ListOptions{LabelSelector: selector}); err != nil {
+		if !kerrors.IsNotFound(err) {
+			return errors.Wrap(err, errListProviderCfg)
+		}
+		return nil
+	}
+	for i := range list.Items {
+		item := &list.Items[i]
+		if _, ok := desired[item.GetName()]; !ok {
+			if err := c.kube.Delete(ctx, item); err != nil && !kerrors.IsNotFound(err) {
+				return errors.Wrapf(err, "%s %q", errDeleteProviderCfg, item.GetName())
+			}
+		}
+	}
+	return nil
+}
+
+// deleteAllDownstreamProviderConfigs deletes all ProviderConfigs owned by this CR.
+func (c *external) deleteAllDownstreamProviderConfigs(ctx context.Context, crName string) error {
+	for _, gvk := range providerConfigGVK {
+		if err := c.deleteStaleProviderConfigs(ctx, gvk, crName, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// downstreamProviderConfigsUpToDate checks that all desired downstream ProviderConfigs exist.
+func (c *external) downstreamProviderConfigsUpToDate(ctx context.Context, cr *v1alpha1.RemoteCluster) bool {
+	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
+		gvk, ok := providerConfigGVK[pc.Type]
+		if !ok {
+			return false
+		}
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		if err := c.kube.Get(ctx, types.NamespacedName{Name: pc.Name}, u); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
 	cr, ok := mg.(*v1alpha1.RemoteCluster)
 	if !ok {
@@ -239,6 +378,23 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.Wrap(err, errGetSecret)
 	}
 
+	// Detect drift: pull latest from Git and compare content hash
+	upToDate := true
+	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
+	if err != nil {
+		return managed.ExternalObservation{}, err
+	}
+	currentHash := contentHash(content)
+	storedHash := secret.GetAnnotations()[annotationContentHash]
+	if currentHash != storedHash {
+		upToDate = false
+	}
+
+	// Check that all downstream ProviderConfigs exist
+	if upToDate && !c.downstreamProviderConfigsUpToDate(ctx, cr) {
+		upToDate = false
+	}
+
 	cr.SetConditions(xpv2.Available())
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
@@ -247,7 +403,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	return managed.ExternalObservation{
 		ResourceExists:   true,
-		ResourceUpToDate: true,
+		ResourceUpToDate: upToDate,
 		ConnectionDetails: managed.ConnectionDetails{
 			"kubeconfig": secret.Data["kubeconfig"],
 		},
@@ -277,8 +433,11 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 			Name:      name,
 			Namespace: ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":                       "provider-kubeconfig",
-				"remotecluster.kubeconfig.stuttgart-things.com/name": cr.GetName(),
+				labelManagedBy:     "provider-kubeconfig",
+				labelRemoteCluster: cr.GetName(),
+			},
+			Annotations: map[string]string{
+				annotationContentHash: contentHash(content),
 			},
 		},
 		Data: map[string][]byte{
@@ -288,6 +447,11 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	if err := c.kube.Create(ctx, secret); err != nil {
 		return managed.ExternalCreation{}, errors.Wrap(err, errCreateSecret)
+	}
+
+	// Create downstream ProviderConfigs
+	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns); err != nil {
+		return managed.ExternalCreation{}, err
 	}
 
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
@@ -303,7 +467,49 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
-	return managed.ExternalUpdate{}, nil
+	cr, ok := mg.(*v1alpha1.RemoteCluster)
+	if !ok {
+		return managed.ExternalUpdate{}, errors.New(errNotRemoteCluster)
+	}
+
+	ns := cr.Spec.ForProvider.SecretNamespace
+	if ns == "" {
+		ns = "crossplane-system"
+	}
+	name := secretName(cr.GetName())
+
+	// Clone/pull Git repo and read the kubeconfig file
+	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
+	if err != nil {
+		return managed.ExternalUpdate{}, err
+	}
+
+	// Fetch and update the existing Secret
+	secret := &corev1.Secret{}
+	if err := c.kube.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, secret); err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, errGetSecret)
+	}
+
+	secret.Data["kubeconfig"] = content
+	if secret.Annotations == nil {
+		secret.Annotations = make(map[string]string)
+	}
+	secret.Annotations[annotationContentHash] = contentHash(content)
+
+	if err := c.kube.Update(ctx, secret); err != nil {
+		return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateSecret)
+	}
+
+	// Reconcile downstream ProviderConfigs (create missing, delete stale)
+	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns); err != nil {
+		return managed.ExternalUpdate{}, err
+	}
+
+	return managed.ExternalUpdate{
+		ConnectionDetails: managed.ConnectionDetails{
+			"kubeconfig": content,
+		},
+	}, nil
 }
 
 func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.ExternalDelete, error) {
@@ -326,6 +532,11 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 	if err := c.kube.Delete(ctx, secret); err != nil && !kerrors.IsNotFound(err) {
 		return managed.ExternalDelete{}, errors.Wrap(err, errDeleteSecret)
+	}
+
+	// Delete all downstream ProviderConfigs owned by this CR
+	if err := c.deleteAllDownstreamProviderConfigs(ctx, cr.GetName()); err != nil {
+		return managed.ExternalDelete{}, err
 	}
 
 	return managed.ExternalDelete{}, nil
