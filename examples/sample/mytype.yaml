@@ -1,3 +1,4 @@
+# Basic RemoteCluster — decrypts kubeconfig and creates a Secret
 apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: RemoteCluster
 metadata:
@@ -5,7 +6,7 @@ metadata:
 spec:
   forProvider:
     source:
-      path: examples/testdata/kubeconfig.yaml
+      path: examples/testdata/kubeconfig.enc.yaml
     secretNamespace: crossplane-system
   providerConfigRef:
     name: default

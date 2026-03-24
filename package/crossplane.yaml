@@ -7,7 +7,8 @@ metadata:
     meta.crossplane.io/source: github.com/stuttgart-things/provider-kubeconfig
     meta.crossplane.io/license: Apache-2.0
     meta.crossplane.io/description: |
-      A kubeconfig that can be used to create Crossplane providers.
+      Manages remote Kubernetes kubeconfigs from SOPS-encrypted Git repositories.
+      Decrypts kubeconfigs, creates Secrets, and bootstraps downstream ProviderConfigs.
 spec:
   capabilities:
     - safe-start

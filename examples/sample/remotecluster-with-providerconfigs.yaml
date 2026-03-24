@@ -1,0 +1,26 @@
+# RemoteCluster with downstream ProviderConfigs for provider-kubernetes and provider-helm
+#
+# This will create:
+#   1. Secret "kubeconfig-production" in crossplane-system (decrypted kubeconfig)
+#   2. ProviderConfig "production-kubernetes" (kubernetes.crossplane.io/v1alpha1)
+#   3. ProviderConfig "production-helm" (helm.crossplane.io/v1beta1)
+#
+# Prerequisites:
+#   - provider-kubernetes and provider-helm CRDs must be installed
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: RemoteCluster
+metadata:
+  name: production
+spec:
+  forProvider:
+    source:
+      path: clusters/production/kubeconfig.enc.yaml
+    secretNamespace: crossplane-system
+    providerConfigs:
+      - name: production-kubernetes
+        type: provider-kubernetes
+      - name: production-helm
+        type: provider-helm
+  providerConfigRef:
+    name: default
+    kind: ClusterProviderConfig
