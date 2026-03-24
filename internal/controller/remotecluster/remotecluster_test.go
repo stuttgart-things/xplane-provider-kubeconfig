@@ -130,9 +130,9 @@ func TestContentHash(t *testing.T) {
 
 func TestBuildDownstreamProviderConfig(t *testing.T) {
 	cases := map[string]struct {
-		pcRef     v1alpha1.ProviderConfigRef
-		wantGVK   schema.GroupVersionKind
-		wantErr   bool
+		pcRef   v1alpha1.ProviderConfigRef
+		wantGVK schema.GroupVersionKind
+		wantErr bool
 	}{
 		"ProviderKubernetes": {
 			pcRef:   v1alpha1.ProviderConfigRef{Name: "my-k8s", Type: "provider-kubernetes"},
@@ -150,7 +150,7 @@ func TestBuildDownstreamProviderConfig(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			u, err := buildDownstreamProviderConfig(tc.pcRef, "kubeconfig-dev", "crossplane-system", "dev")
+			u, err := buildDownstreamProviderConfig(tc.pcRef, "kubeconfig-dev", defaultSecretNamespace, "dev")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -179,8 +179,8 @@ func TestBuildDownstreamProviderConfig(t *testing.T) {
 			if secretRef["name"] != "kubeconfig-dev" {
 				t.Errorf("secretRef.name: want %q, got %v", "kubeconfig-dev", secretRef["name"])
 			}
-			if secretRef["namespace"] != "crossplane-system" {
-				t.Errorf("secretRef.namespace: want %q, got %v", "crossplane-system", secretRef["namespace"])
+			if secretRef["namespace"] != defaultSecretNamespace {
+				t.Errorf("secretRef.namespace: want %q, got %v", defaultSecretNamespace, secretRef["namespace"])
 			}
 			if secretRef["key"] != "kubeconfig" {
 				t.Errorf("secretRef.key: want %q, got %v", "kubeconfig", secretRef["key"])
@@ -231,8 +231,8 @@ func TestObserveDefaultNamespace(t *testing.T) {
 	e := &external{kube: mc}
 	_, _ = e.Observe(context.Background(), cr)
 
-	if capturedKey.Namespace != "crossplane-system" {
-		t.Errorf("expected default namespace %q, got %q", "crossplane-system", capturedKey.Namespace)
+	if capturedKey.Namespace != defaultSecretNamespace {
+		t.Errorf("expected default namespace %q, got %q", defaultSecretNamespace, capturedKey.Namespace)
 	}
 }
 
@@ -419,7 +419,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-helm", Type: "provider-helm"},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", "crossplane-system")
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -448,7 +448,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes"},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", "crossplane-system")
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -482,7 +482,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes"},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", "crossplane-system")
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

@@ -20,4 +20,4 @@ func SetupGated(mgr ctrl.Manager, o controller.Options) error {
 		}
 	}
 	return nil
-}	
+}

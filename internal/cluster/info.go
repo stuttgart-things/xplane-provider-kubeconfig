@@ -48,21 +48,34 @@ func Gather(ctx context.Context, kubeconfig []byte) (*Info, error) {
 		return nil, errors.Wrap(err, "cannot create kubernetes clientset")
 	}
 
-	info := &Info{
-		APIEndpoint: cfg.Host,
+	info := &Info{APIEndpoint: cfg.Host}
+
+	if err := gatherVersion(cs, info); err != nil {
+		return nil, err
 	}
 
-	// Server version
+	if err := gatherNodeInfo(ctx, cs, info); err != nil {
+		return nil, err
+	}
+
+	gatherServiceCIDR(ctx, cs, info)
+
+	return info, nil
+}
+
+func gatherVersion(cs kubernetes.Interface, info *Info) error {
 	sv, err := cs.Discovery().ServerVersion()
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot get server version")
+		return errors.Wrap(err, "cannot get server version")
 	}
 	info.ServerVersion = sv.GitVersion
+	return nil
+}
 
-	// Nodes
+func gatherNodeInfo(ctx context.Context, cs kubernetes.Interface, info *Info) error {
 	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, errors.Wrap(err, "cannot list nodes")
+		return errors.Wrap(err, "cannot list nodes")
 	}
 	info.NodeCount = len(nodes.Items)
 	for _, node := range nodes.Items {
@@ -70,17 +83,15 @@ func Gather(ctx context.Context, kubeconfig []byte) (*Info, error) {
 			info.NodeCIDRs = append(info.NodeCIDRs, node.Spec.PodCIDR)
 		}
 	}
+	if len(nodes.Items) > 0 && nodes.Items[0].Spec.PodCIDR != "" {
+		info.PodCIDR = nodes.Items[0].Spec.PodCIDR
+	}
+	return nil
+}
 
-	// Service CIDR from kube-apiserver ClusterIP range (best-effort via "kubernetes" service)
+func gatherServiceCIDR(ctx context.Context, cs kubernetes.Interface, info *Info) {
 	svc, err := cs.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{})
 	if err == nil && svc.Spec.ClusterIP != "" {
 		info.ServiceCIDR = svc.Spec.ClusterIP + "/16"
 	}
-
-	// Pod CIDR: use the first node's PodCIDR as a representative
-	if len(nodes.Items) > 0 && nodes.Items[0].Spec.PodCIDR != "" {
-		info.PodCIDR = nodes.Items[0].Spec.PodCIDR
-	}
-
-	return info, nil
 }

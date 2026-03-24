@@ -34,8 +34,10 @@ func SOPSDecrypt(data []byte, filePath string, ageKey string) ([]byte, error) {
 
 	// Set the age key for SOPS to pick up
 	prev := os.Getenv("SOPS_AGE_KEY")
-	os.Setenv("SOPS_AGE_KEY", ageKey)
-	defer os.Setenv("SOPS_AGE_KEY", prev)
+	if err := os.Setenv("SOPS_AGE_KEY", ageKey); err != nil {
+		return nil, errors.Wrap(err, "cannot set SOPS_AGE_KEY")
+	}
+	defer func() { _ = os.Setenv("SOPS_AGE_KEY", prev) }()
 
 	format := formatFromPath(filePath)
 	cleartext, err := decrypt.Data(data, format)
