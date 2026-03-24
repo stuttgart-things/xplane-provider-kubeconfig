@@ -1,4 +1,4 @@
-module github.com/crossplane/provider-template
+module github.com/stuttgart-things/provider-kubeconfig
 
 go 1.24.0
 

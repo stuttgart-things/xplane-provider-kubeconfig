@@ -1,0 +1,121 @@
+/*
+Copyright 2025 The Crossplane Authors.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+package v1alpha1
+
+import (
+	"reflect"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v2"
+)
+
+// RemoteClusterSource defines where to find the encrypted kubeconfig in the Git repo.
+type RemoteClusterSource struct {
+	// Path to the SOPS-encrypted kubeconfig file in the Git repository.
+	Path string `json:"path"`
+}
+
+// ProviderConfigRef defines a downstream ProviderConfig to create.
+type ProviderConfigRef struct {
+	// Name of the ProviderConfig to create.
+	Name string `json:"name"`
+	// Type of the downstream provider. e.g. provider-kubernetes, provider-helm
+	// +kubebuilder:validation:Enum=provider-kubernetes;provider-helm
+	Type string `json:"type"`
+}
+
+// RemoteClusterParameters are the configurable fields of a RemoteCluster.
+type RemoteClusterParameters struct {
+	// Source defines the path to the encrypted kubeconfig in the Git repo.
+	Source RemoteClusterSource `json:"source"`
+
+	// SecretNamespace is the namespace where the decrypted kubeconfig Secret will be created.
+	// +kubebuilder:default=crossplane-system
+	SecretNamespace string `json:"secretNamespace,omitempty"`
+
+	// ProviderConfigs defines downstream ProviderConfigs to create from this kubeconfig.
+	// +optional
+	ProviderConfigs []ProviderConfigRef `json:"providerConfigs,omitempty"`
+}
+
+// RemoteClusterObservation are the observable fields of a RemoteCluster.
+type RemoteClusterObservation struct {
+	// ClusterName is the name of the remote cluster.
+	ClusterName string `json:"clusterName,omitempty"`
+	// ServerVersion is the Kubernetes version of the remote cluster.
+	ServerVersion string `json:"serverVersion,omitempty"`
+	// APIEndpoint is the API server endpoint of the remote cluster.
+	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	// PodCIDR is the pod network CIDR of the remote cluster.
+	PodCIDR string `json:"podCIDR,omitempty"`
+	// ServiceCIDR is the service network CIDR of the remote cluster.
+	ServiceCIDR string `json:"serviceCIDR,omitempty"`
+	// NodeCIDRs contains the CIDRs assigned to each node.
+	NodeCIDRs []string `json:"nodeCIDRs,omitempty"`
+	// NodeCount is the number of nodes in the remote cluster.
+	NodeCount int `json:"nodeCount,omitempty"`
+	// SecretRef is the name of the Secret containing the decrypted kubeconfig.
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
+// A RemoteClusterSpec defines the desired state of a RemoteCluster.
+type RemoteClusterSpec struct {
+	xpv2.ManagedResourceSpec `json:",inline"`
+	ForProvider              RemoteClusterParameters `json:"forProvider"`
+}
+
+// A RemoteClusterStatus represents the observed state of a RemoteCluster.
+type RemoteClusterStatus struct {
+	xpv1.ResourceStatus `json:",inline"`
+	AtProvider          RemoteClusterObservation `json:"atProvider,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="SYNCED",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status"
+// +kubebuilder:printcolumn:name="CLUSTER",type="string",JSONPath=".status.atProvider.clusterName"
+// +kubebuilder:printcolumn:name="VERSION",type="string",JSONPath=".status.atProvider.serverVersion"
+// +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:resource:scope=Cluster,categories={crossplane,managed,kubeconfig}
+// A RemoteCluster reads a SOPS-encrypted kubeconfig from Git, decrypts it,
+// and bootstraps Secrets and ProviderConfigs for the remote cluster.
+type RemoteCluster struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              RemoteClusterSpec   `json:"spec"`
+	Status            RemoteClusterStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// RemoteClusterList contains a list of RemoteCluster.
+type RemoteClusterList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []RemoteCluster `json:"items"`
+}
+
+// RemoteCluster type metadata.
+var (
+	RemoteClusterKind             = reflect.TypeOf(RemoteCluster{}).Name()
+	RemoteClusterGroupKind        = schema.GroupKind{Group: Group, Kind: RemoteClusterKind}.String()
+	RemoteClusterKindAPIVersion   = RemoteClusterKind + "." + SchemeGroupVersion.String()
+	RemoteClusterGroupVersionKind = SchemeGroupVersion.WithKind(RemoteClusterKind)
+)
+
+func init() {
+	SchemeBuilder.Register(&RemoteCluster{}, &RemoteClusterList{})
+}

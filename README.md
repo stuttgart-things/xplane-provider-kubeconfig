@@ -1,39 +1,119 @@
-# provider-template
+# provider-kubeconfig
 
-`provider-template` is a minimal [Crossplane](https://crossplane.io/) Provider
-that is meant to be used as a template for implementing new Providers. It comes
-with the following features that are meant to be refactored:
+`provider-kubeconfig` is a [Crossplane](https://crossplane.io/) Provider that
+manages remote Kubernetes cluster kubeconfigs. It reads SOPS-encrypted
+kubeconfig files from a Git repository, decrypts them, and bootstraps Secrets
+and downstream ProviderConfigs for the remote clusters.
 
-- A `ProviderConfig` type that only points to a credentials `Secret`.
-- A `MyType` resource type that serves as an example managed resource.
-- A managed resource controller that reconciles `MyType` objects and simply
-  prints their configuration in its `Observe` method.
+## Overview
+
+### Custom Resource Types
+
+| Kind | Scope | Description |
+|------|-------|-------------|
+| `ProviderConfig` | Namespaced | Git + SOPS/age decryption settings (namespaced) |
+| `ClusterProviderConfig` | Cluster | Git + SOPS/age decryption settings (cluster-scoped) |
+| `ProviderConfigUsage` | Namespaced | Tracks which managed resources use a `ProviderConfig` |
+| `ClusterProviderConfigUsage` | Cluster | Tracks which managed resources use a `ClusterProviderConfig` |
+| `RemoteCluster` | Cluster | Managed resource representing a remote cluster kubeconfig |
+
+### Provider Config
+
+The `ProviderConfig` / `ClusterProviderConfig` resources define how to connect
+to the Git repository and how to decrypt secrets:
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: default
+spec:
+  git:
+    url: https://github.com/my-org/my-cluster-configs.git
+    branch: main
+    secretRef:
+      name: git-credentials
+      namespace: crossplane-system
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key
+      namespace: crossplane-system
+```
+
+### RemoteCluster
+
+The `RemoteCluster` managed resource points to an encrypted kubeconfig file
+inside the Git repository:
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: RemoteCluster
+metadata:
+  name: my-remote-cluster
+spec:
+  forProvider:
+    source:
+      path: clusters/my-cluster/kubeconfig.enc.yaml
+    secretNamespace: crossplane-system
+    providerConfigs:
+      - name: my-cluster-kubernetes
+        type: provider-kubernetes
+      - name: my-cluster-helm
+        type: provider-helm
+  providerConfigRef:
+    name: default
+    kind: ClusterProviderConfig
+```
+
+## Project Structure
+
+```
+apis/
+  v1alpha1/                  # ProviderConfig, ClusterProviderConfig and usage types
+  kubeconfig/
+    v1alpha1/                # RemoteCluster managed resource type
+internal/
+  controller/
+    config/                  # ProviderConfig controller
+    remotecluster/           # RemoteCluster reconciler (scaffold, no logic yet)
+    kubeconfig.go            # Controller registration (SetupGated)
+package/
+  crds/                      # Generated CRDs
+  crossplane.yaml            # Crossplane package metadata
+```
+
+## Development Status
+
+The provider scaffold is complete and builds successfully. The `RemoteCluster`
+controller currently contains **placeholder logic only** (no-op observe, create,
+update, delete). The next steps are to implement the actual reconciliation:
+
+1. Clone/pull the Git repository referenced in the `ProviderConfig`
+2. Read the SOPS-encrypted kubeconfig file at the specified path
+3. Decrypt the kubeconfig using the configured age/SOPS key
+4. Create a Kubernetes Secret with the decrypted kubeconfig
+5. Optionally create downstream `ProviderConfig` resources (e.g. for `provider-kubernetes`, `provider-helm`)
+6. Populate `status.atProvider` with cluster metadata (server version, endpoint, CIDRs, node count)
 
 ## Developing
 
-1. Use this repository as a template to create a new one.
-1. Run `make submodules` to initialize the "build" Make submodule we use for CI/CD.
-1. Rename the provider by running the following command:
-```shell
-  export provider_name=MyProvider # Camel case, e.g. GitHub
-  make provider.prepare provider=${provider_name}
-```
-4. Add your new type by running the following command:
-```shell
-  export group=sample # lower case e.g. core, cache, database, storage, etc.
-  export type=MyType # Camel casee.g. Bucket, Database, CacheCluster, etc.
-  make provider.addtype provider=${provider_name} group=${group} kind=${type}
-```
-5. Replace the *sample* group with your new group in apis/{provider}.go
-5. Replace the *mytype* type with your new type in internal/controller/{provider}.go
-5. Replace the default controller and ProviderConfig implementations with your own
-5. Register your new type into `SetupGated` function in `internal/controller/register.go`
-5. Run `make reviewable` to run code generation, linters, and tests.
-5. Run `make build` to build the provider.
+1. Initialize the build submodule:
+   ```shell
+   make submodules
+   ```
 
-Refer to Crossplane's [CONTRIBUTING.md] file for more information on how the
-Crossplane community prefers to work. The [Provider Development][provider-dev]
-guide may also be of use.
+2. Generate CRDs, deepcopy, and run linters:
+   ```shell
+   make reviewable
+   ```
 
-[CONTRIBUTING.md]: https://github.com/crossplane/crossplane/blob/master/CONTRIBUTING.md
-[provider-dev]: https://github.com/crossplane/crossplane/blob/master/contributing/guide-provider-development.md
+3. Build the provider binary and Docker image:
+   ```shell
+   make build
+   ```
+
+## Links
+
+- [Crossplane Provider Development Guide](https://github.com/crossplane/crossplane/blob/master/contributing/guide-provider-development.md)
+- [Crossplane Contributing Guide](https://github.com/crossplane/crossplane/blob/master/CONTRIBUTING.md)

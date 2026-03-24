@@ -1,38 +1,18 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: default
+  name: crossplane-system
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  namespace: default
-  name: example-provider-secret
-type: Opaque
-data:
-  credentials: QkFTRTY0RU5DT0RFRF9QUk9WSURFUl9DUkVEUwo=
----
-apiVersion: template.crossplane.io/v1alpha1
-kind: ProviderConfig
-metadata:
-  name: example
-  namespace: default
-spec:
-  credentials:
-    source: Secret
-    secretRef:
-      namespace: default
-      name: example-provider-secret
-      key: credentials
----
-apiVersion: template.crossplane.io/v1alpha1
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: ClusterProviderConfig
 metadata:
-  name: example
+  name: default
 spec:
-  credentials:
-    source: Secret
+  git:
+    url: https://github.com/example/cluster-configs.git
+    branch: main
+  decryption:
+    provider: sops
     secretRef:
-      namespace: default
-      name: example-provider-secret
-      key: credentials
+      name: age-key
+      namespace: crossplane-system

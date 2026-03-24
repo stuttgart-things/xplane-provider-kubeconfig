@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package mytype
+package remotecluster
 
 import (
 	"context"
@@ -23,9 +23,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/test"
-
-	"github.com/crossplane/provider-template/apis/sample/v1alpha1"
 )
 
 // Unlike many Kubernetes projects Crossplane does not use third party testing
@@ -43,7 +42,7 @@ func TestObserve(t *testing.T) {
 
 	type args struct {
 		ctx context.Context
-		cr  *v1alpha1.MyType
+		mg  resource.Managed
 	}
 
 	type want struct {
@@ -63,7 +62,7 @@ func TestObserve(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			e := external{service: tc.fields.service}
-			got, err := e.Observe(tc.args.ctx, tc.args.cr)
+			got, err := e.Observe(tc.args.ctx, tc.args.mg)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ne.Observe(...): -want error, +got error:\n%s\n", tc.reason, diff)
 			}
