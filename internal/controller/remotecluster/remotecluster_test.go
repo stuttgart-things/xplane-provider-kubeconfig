@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource/fake"
@@ -261,6 +262,28 @@ func TestObserveDefaultNamespace(t *testing.T) {
 
 	if capturedKey.Namespace != "crossplane-system" {
 		t.Errorf("expected default namespace %q, got %q", "crossplane-system", capturedKey.Namespace)
+	}
+}
+
+func TestObserveSetsAvailableCondition(t *testing.T) {
+	mc := &mockClient{
+		MockGet: func(_ context.Context, _ types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+			s := obj.(*corev1.Secret)
+			s.Data = map[string][]byte{"kubeconfig": []byte("data")}
+			return nil
+		},
+	}
+
+	cr := newRemoteCluster("dev", "default", "clusters/dev.yaml")
+	e := &external{kube: mc}
+	_, _ = e.Observe(context.Background(), cr)
+
+	cond := cr.GetCondition(xpv2.TypeReady)
+	if cond.Status != corev1.ConditionTrue {
+		t.Errorf("expected Ready=True, got %v", cond.Status)
+	}
+	if cond.Reason != xpv2.ReasonAvailable {
+		t.Errorf("expected reason %q, got %q", xpv2.ReasonAvailable, cond.Reason)
 	}
 }
 

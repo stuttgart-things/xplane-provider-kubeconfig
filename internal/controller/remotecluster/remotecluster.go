@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 
 	"github.com/pkg/errors"
@@ -238,6 +239,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.Wrap(err, errGetSecret)
 	}
 
+	cr.SetConditions(xpv2.Available())
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
 		SecretRef:   name,

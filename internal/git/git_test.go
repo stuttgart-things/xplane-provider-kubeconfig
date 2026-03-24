@@ -70,6 +70,11 @@ func TestNewRepoDeterministicCacheDir(t *testing.T) {
 	if r1.cacheDir == r3.cacheDir {
 		t.Errorf("different URLs should produce different cacheDirs: %q vs %q", r1.cacheDir, r3.cacheDir)
 	}
+
+	r4 := NewRepo("https://github.com/example/repo.git", "develop", "")
+	if r1.cacheDir == r4.cacheDir {
+		t.Errorf("different branches should produce different cacheDirs: %q vs %q", r1.cacheDir, r4.cacheDir)
+	}
 }
 
 func TestAuth(t *testing.T) {
