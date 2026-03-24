@@ -139,7 +139,7 @@ func (r *Repo) pull(ctx context.Context, refName plumbing.ReferenceName) (string
 // ReadFile reads a file at the given relative path from the cloned repo.
 func (r *Repo) ReadFile(relativePath string) ([]byte, error) {
 	fullPath := filepath.Join(r.cacheDir, relativePath)
-	data, err := os.ReadFile(fullPath)
+	data, err := os.ReadFile(fullPath) //nolint:gosec // path is constructed from controlled cacheDir + relative path
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot read file %q from git repository", relativePath)
 	}

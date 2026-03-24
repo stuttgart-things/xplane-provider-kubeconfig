@@ -50,31 +50,32 @@ import (
 )
 
 const (
-	errNotRemoteCluster    = "managed resource is not a RemoteCluster custom resource"
-	errTrackPCUsage        = "cannot track ProviderConfig usage"
-	errGetPC               = "cannot get ProviderConfig"
-	errGetCPC              = "cannot get ClusterProviderConfig"
-	errGetGitSecret        = "cannot get Git auth secret"
-	errGetDecryptSecret    = "cannot get decryption key secret"
-	errCloneRepo           = "cannot clone/pull git repository"
-	errReadFile            = "cannot read file from git repository"
-	errDecryptFile         = "cannot decrypt file"
-	errCreateSecret        = "cannot create kubeconfig Secret"
-	errGetSecret           = "cannot get kubeconfig Secret"
-	errUpdateSecret        = "cannot update kubeconfig Secret"
-	errDeleteSecret        = "cannot delete kubeconfig Secret"
-	errCreateProviderCfg   = "cannot create downstream ProviderConfig"
-	errDeleteProviderCfg   = "cannot delete downstream ProviderConfig"
-	errListProviderCfg     = "cannot list downstream ProviderConfigs"
+	errNotRemoteCluster  = "managed resource is not a RemoteCluster custom resource"
+	errTrackPCUsage      = "cannot track ProviderConfig usage"
+	errGetPC             = "cannot get ProviderConfig"
+	errGetCPC            = "cannot get ClusterProviderConfig"
+	errGetGitSecret      = "cannot get Git auth secret"
+	errGetDecryptSecret  = "cannot get decryption key secret"
+	errCloneRepo         = "cannot clone/pull git repository"
+	errReadFile          = "cannot read file from git repository"
+	errDecryptFile       = "cannot decrypt file"
+	errCreateSecret      = "cannot create kubeconfig Secret"
+	errGetSecret         = "cannot get kubeconfig Secret"
+	errUpdateSecret      = "cannot update kubeconfig Secret"
+	errDeleteSecret      = "cannot delete kubeconfig Secret"
+	errCreateProviderCfg = "cannot create downstream ProviderConfig"
+	errDeleteProviderCfg = "cannot delete downstream ProviderConfig"
+	errListProviderCfg   = "cannot list downstream ProviderConfigs"
 
-	annotationContentHash = "kubeconfig.stuttgart-things.com/content-hash"
-	labelManagedBy        = "app.kubernetes.io/managed-by"
-	labelRemoteCluster    = "remotecluster.kubeconfig.stuttgart-things.com/name"
+	annotationContentHash  = "kubeconfig.stuttgart-things.com/content-hash"
+	labelManagedBy         = "app.kubernetes.io/managed-by"
+	labelRemoteCluster     = "remotecluster.kubeconfig.stuttgart-things.com/name"
+	defaultSecretNamespace = "crossplane-system"
 )
 
 var providerConfigGVK = map[string]schema.GroupVersionKind{
 	"provider-kubernetes": {Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"},
-	"provider-helm":      {Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
+	"provider-helm":       {Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
 }
 
 // SetupGated adds a controller that reconciles RemoteCluster managed resources with safe-start support.
@@ -146,8 +147,25 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, errors.Wrap(err, errTrackPCUsage)
 	}
 
-	var spec apisv1alpha1.ProviderConfigSpec
+	spec, err := c.resolveProviderConfigSpec(ctx, cr)
+	if err != nil {
+		return nil, err
+	}
 
+	gitToken, err := c.resolveGitToken(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	ageKey, err := c.resolveAgeKey(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	return &external{kube: c.kube, providerSpec: *spec, gitToken: gitToken, ageKey: ageKey}, nil
+}
+
+func (c *connector) resolveProviderConfigSpec(ctx context.Context, cr *v1alpha1.RemoteCluster) (*apisv1alpha1.ProviderConfigSpec, error) {
 	ref := cr.GetProviderConfigReference()
 	if ref == nil {
 		return nil, errors.New("providerConfigRef is not set")
@@ -159,43 +177,42 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		if err := c.kube.Get(ctx, types.NamespacedName{Name: ref.Name}, pc); err != nil {
 			return nil, errors.Wrap(err, errGetPC)
 		}
-		spec = pc.Spec
+		return &pc.Spec, nil
 	case "ClusterProviderConfig":
 		cpc := &apisv1alpha1.ClusterProviderConfig{}
 		if err := c.kube.Get(ctx, types.NamespacedName{Name: ref.Name}, cpc); err != nil {
 			return nil, errors.Wrap(err, errGetCPC)
 		}
-		spec = cpc.Spec
+		return &cpc.Spec, nil
 	default:
 		return nil, errors.Errorf("unsupported provider config kind: %s", ref.Kind)
 	}
+}
 
-	// Read Git auth token from the referenced Secret, if configured
-	var gitToken string
-	if spec.Git.SecretRef != nil {
-		secret := &corev1.Secret{}
-		if err := c.kube.Get(ctx, types.NamespacedName{
-			Name:      spec.Git.SecretRef.Name,
-			Namespace: spec.Git.SecretRef.Namespace,
-		}, secret); err != nil {
-			return nil, errors.Wrap(err, errGetGitSecret)
-		}
-		gitToken = string(secret.Data["token"])
+func (c *connector) resolveGitToken(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (string, error) {
+	if spec.Git.SecretRef == nil {
+		return "", nil
 	}
+	secret := &corev1.Secret{}
+	if err := c.kube.Get(ctx, types.NamespacedName{
+		Name:      spec.Git.SecretRef.Name,
+		Namespace: spec.Git.SecretRef.Namespace,
+	}, secret); err != nil {
+		return "", errors.Wrap(err, errGetGitSecret)
+	}
+	return string(secret.Data["token"]), nil
+}
 
-	// Read the decryption key from the referenced Secret
-	var ageKey string
+func (c *connector) resolveAgeKey(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (string, error) {
 	decryptRef := spec.Decryption.SecretRef
 	secret := &corev1.Secret{}
 	if err := c.kube.Get(ctx, types.NamespacedName{
 		Name:      decryptRef.Name,
 		Namespace: decryptRef.Namespace,
 	}, secret); err != nil {
-		return nil, errors.Wrap(err, errGetDecryptSecret)
+		return "", errors.Wrap(err, errGetDecryptSecret)
 	}
-	ageKey = string(secret.Data["key"])
-
-	return &external{kube: c.kube, providerSpec: spec, gitToken: gitToken, ageKey: ageKey}, nil
+	return string(secret.Data["key"]), nil
 }
 
 type external struct {
@@ -366,7 +383,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 	ns := cr.Spec.ForProvider.SecretNamespace
 	if ns == "" {
-		ns = "crossplane-system"
+		ns = defaultSecretNamespace
 	}
 	name := secretName(cr.GetName())
 
@@ -431,7 +448,7 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	ns := cr.Spec.ForProvider.SecretNamespace
 	if ns == "" {
-		ns = "crossplane-system"
+		ns = defaultSecretNamespace
 	}
 	name := secretName(cr.GetName())
 
@@ -487,7 +504,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	ns := cr.Spec.ForProvider.SecretNamespace
 	if ns == "" {
-		ns = "crossplane-system"
+		ns = defaultSecretNamespace
 	}
 	name := secretName(cr.GetName())
 
@@ -533,7 +550,7 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	ns := cr.Spec.ForProvider.SecretNamespace
 	if ns == "" {
-		ns = "crossplane-system"
+		ns = defaultSecretNamespace
 	}
 	name := secretName(cr.GetName())
 
