@@ -1,11 +1,11 @@
 apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: RemoteCluster
 metadata:
-  name: my-remote-cluster
+  name: test-cluster
 spec:
   forProvider:
     source:
-      path: clusters/my-cluster/kubeconfig.enc.yaml
+      path: examples/testdata/kubeconfig.yaml
     secretNamespace: crossplane-system
   providerConfigRef:
     name: default

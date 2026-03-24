@@ -39,6 +39,7 @@ import (
 
 	v1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/kubeconfig/v1alpha1"
 	apisv1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/v1alpha1"
+	gitpkg "github.com/stuttgart-things/provider-kubeconfig/internal/git"
 )
 
 const (
@@ -46,7 +47,9 @@ const (
 	errTrackPCUsage     = "cannot track ProviderConfig usage"
 	errGetPC            = "cannot get ProviderConfig"
 	errGetCPC           = "cannot get ClusterProviderConfig"
-	errNewClient        = "cannot create new Service"
+	errGetGitSecret     = "cannot get Git auth secret"
+	errCloneRepo        = "cannot clone/pull git repository"
+	errReadFile         = "cannot read file from git repository"
 	errCreateSecret     = "cannot create kubeconfig Secret"
 	errGetSecret        = "cannot get kubeconfig Secret"
 	errDeleteSecret     = "cannot delete kubeconfig Secret"
@@ -145,17 +148,47 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		return nil, errors.Errorf("unsupported provider config kind: %s", ref.Kind)
 	}
 
-	return &external{kube: c.kube, providerSpec: spec}, nil
+	// Read Git auth token from the referenced Secret, if configured
+	var gitToken string
+	if spec.Git.SecretRef != nil {
+		secret := &corev1.Secret{}
+		if err := c.kube.Get(ctx, types.NamespacedName{
+			Name:      spec.Git.SecretRef.Name,
+			Namespace: spec.Git.SecretRef.Namespace,
+		}, secret); err != nil {
+			return nil, errors.Wrap(err, errGetGitSecret)
+		}
+		gitToken = string(secret.Data["token"])
+	}
+
+	return &external{kube: c.kube, providerSpec: spec, gitToken: gitToken}, nil
 }
 
 type external struct {
 	kube         client.Client
 	providerSpec apisv1alpha1.ProviderConfigSpec
+	gitToken     string
 }
 
 // secretName returns a deterministic Secret name for the RemoteCluster.
 func secretName(crName string) string {
 	return fmt.Sprintf("kubeconfig-%s", crName)
+}
+
+// cloneAndReadFile clones/pulls the Git repo and reads the file at source.path.
+func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byte, error) {
+	repo := gitpkg.NewRepo(c.providerSpec.Git.URL, c.providerSpec.Git.Branch, c.gitToken)
+
+	if _, err := repo.EnsureCloned(ctx); err != nil {
+		return nil, errors.Wrap(err, errCloneRepo)
+	}
+
+	content, err := repo.ReadFile(filePath)
+	if err != nil {
+		return nil, errors.Wrap(err, errReadFile)
+	}
+
+	return content, nil
 }
 
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
@@ -179,11 +212,9 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.Wrap(err, errGetSecret)
 	}
 
-	// The Secret exists — populate status
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
 		SecretRef:   name,
-		APIEndpoint: "https://hello-world-placeholder:6443",
 	}
 
 	return managed.ExternalObservation{
@@ -207,37 +238,23 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 	name := secretName(cr.GetName())
 
-	// Hello-world: create a Secret with a placeholder kubeconfig.
-	// In the real implementation this will be the decrypted kubeconfig from Git.
-	placeholder := fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- cluster:
-    server: https://hello-world-placeholder:6443
-  name: %s
-contexts:
-- context:
-    cluster: %s
-    user: admin
-  name: %s
-current-context: %s
-users:
-- name: admin
-  user:
-    token: hello-world-token
-`, cr.GetName(), cr.GetName(), cr.GetName(), cr.GetName())
+	// Clone/pull Git repo and read the kubeconfig file
+	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
+	if err != nil {
+		return managed.ExternalCreation{}, err
+	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "provider-kubeconfig",
+				"app.kubernetes.io/managed-by":                       "provider-kubeconfig",
 				"remotecluster.kubeconfig.stuttgart-things.com/name": cr.GetName(),
 			},
 		},
 		Data: map[string][]byte{
-			"kubeconfig": []byte(placeholder),
+			"kubeconfig": content,
 		},
 	}
 
@@ -248,18 +265,16 @@ users:
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
 		SecretRef:   name,
-		APIEndpoint: "https://hello-world-placeholder:6443",
 	}
 
 	return managed.ExternalCreation{
 		ConnectionDetails: managed.ConnectionDetails{
-			"kubeconfig": []byte(placeholder),
+			"kubeconfig": content,
 		},
 	}, nil
 }
 
 func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
-	// No-op for now — Observe reports ResourceUpToDate: true
 	return managed.ExternalUpdate{}, nil
 }
 
