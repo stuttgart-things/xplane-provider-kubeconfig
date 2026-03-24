@@ -1,0 +1,68 @@
+---
+name: Release
+on:
+  workflow_run:
+    workflows: ["Build, Push & Scan Container Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Build & Push to GHCR
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Set build metadata
+        id: meta
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+
+      - name: Build & push to ghcr.io (commit tag)
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          call: >-
+            bake-image
+            --src .
+            --repository-name stuttgart-things/provider-kubeconfig
+            --tag ${{ steps.meta.outputs.commit }}
+            --registry-url ghcr.io
+            --registry-username env:GITHUB_ACTOR
+            --registry-password env:GITHUB_TOKEN
+            --dockerfile cluster/images/provider-kubeconfig/Dockerfile
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+
+      - name: Build & push to ghcr.io (latest tag)
+        uses: dagger/dagger-for-github@v8.4.0
+        with:
+          module: github.com/stuttgart-things/blueprints/kubernetes-microservice@v1.71.0
+          call: >-
+            bake-image
+            --src .
+            --repository-name stuttgart-things/provider-kubeconfig
+            --tag latest
+            --registry-url ghcr.io
+            --registry-username env:GITHUB_ACTOR
+            --registry-password env:GITHUB_TOKEN
+            --dockerfile cluster/images/provider-kubeconfig/Dockerfile
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
