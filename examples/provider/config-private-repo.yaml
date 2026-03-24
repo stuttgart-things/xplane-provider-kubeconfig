@@ -1,9 +1,12 @@
+# Example: ClusterProviderConfig for a private Git repository
 apiVersion: v1
-kind: Namespace
+kind: Secret
 metadata:
-  name: crossplane-system
+  name: git-credentials
+  namespace: crossplane-system
+stringData:
+  token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ---
-# Age decryption key Secret
 apiVersion: v1
 kind: Secret
 metadata:
@@ -12,15 +15,17 @@ metadata:
 stringData:
   key: AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ---
-# ClusterProviderConfig (cluster-scoped) — public repo, no git credentials
 apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: ClusterProviderConfig
 metadata:
-  name: default
+  name: private-repo
 spec:
   git:
-    url: https://github.com/stuttgart-things/xplane-provider-kubeconfig.git
+    url: https://github.com/my-org/my-cluster-configs.git
     branch: main
+    secretRef:
+      name: git-credentials
+      namespace: crossplane-system
   decryption:
     provider: sops
     secretRef:
