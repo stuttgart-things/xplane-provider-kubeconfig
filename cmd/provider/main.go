@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +27,11 @@ import (
 	"github.com/alecthomas/kingpin/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -46,6 +50,7 @@ import (
 
 	"github.com/stuttgart-things/provider-kubeconfig/apis"
 	kubeconfig "github.com/stuttgart-things/provider-kubeconfig/internal/controller"
+	rbacpkg "github.com/stuttgart-things/provider-kubeconfig/internal/rbac"
 	"github.com/stuttgart-things/provider-kubeconfig/internal/version"
 )
 
@@ -107,6 +112,17 @@ func main() {
 
 	kingpin.FatalIfError(apis.AddToScheme(mgr.GetScheme()), "Cannot add Kubeconfig APIs to scheme")
 	kingpin.FatalIfError(apiextensionsv1.AddToScheme(mgr.GetScheme()), "Cannot add CustomResourceDefinition to scheme")
+	kingpin.FatalIfError(corev1.AddToScheme(mgr.GetScheme()), "Cannot add core/v1 to scheme")
+	kingpin.FatalIfError(rbacv1.AddToScheme(mgr.GetScheme()), "Cannot add RBAC to scheme")
+
+	// Bootstrap RBAC for downstream ProviderConfig management (best-effort).
+	// Use a direct client (not cached) since the manager hasn't started yet.
+	directClient, err := client.New(cfg, client.Options{Scheme: mgr.GetScheme()})
+	if err == nil {
+		if err := rbacpkg.EnsureDownstreamRBAC(context.Background(), directClient); err != nil {
+			log.Info("Could not bootstrap downstream RBAC (may require manual setup)", "error", err)
+		}
+	}
 
 	metricRecorder := managed.NewMRMetricRecorder()
 	stateMetrics := statemetrics.NewMRStateMetrics()
