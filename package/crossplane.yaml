@@ -21,10 +21,10 @@ spec:
       - apiGroups: ["helm.crossplane.io"]
         resources: ["providerconfigs"]
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-      # Downstream ProviderConfigs — v2 (namespaced)
+      # Downstream ProviderConfigs + ClusterProviderConfigs — v2
       - apiGroups: ["kubernetes.m.crossplane.io"]
-        resources: ["providerconfigs"]
+        resources: ["providerconfigs", "clusterproviderconfigs"]
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
       - apiGroups: ["helm.m.crossplane.io"]
-        resources: ["providerconfigs"]
+        resources: ["providerconfigs", "clusterproviderconfigs"]
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

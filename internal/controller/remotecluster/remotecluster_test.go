@@ -157,6 +157,16 @@ func TestBuildDownstreamProviderConfig(t *testing.T) {
 			wantGVK:       schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
 			wantNamespace: defaultSecretNamespace,
 		},
+		"ProviderKubernetesV2Cluster": {
+			meta:    providerConfigGVKs["provider-kubernetes"]["v2-cluster"],
+			pcName:  "my-k8s",
+			wantGVK: schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ClusterProviderConfig"},
+		},
+		"ProviderHelmV2Cluster": {
+			meta:    providerConfigGVKs["provider-helm"]["v2-cluster"],
+			pcName:  "my-helm",
+			wantGVK: schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ClusterProviderConfig"},
+		},
 	}
 
 	for name, tc := range cases {
@@ -205,6 +215,7 @@ func TestLookupProviderConfigMeta(t *testing.T) {
 	}{
 		"ValidV1":           {providerType: "provider-kubernetes", apiVer: "v1"},
 		"ValidV2":           {providerType: "provider-helm", apiVer: "v2"},
+		"ValidV2Cluster":    {providerType: "provider-kubernetes", apiVer: "v2-cluster"},
 		"UnsupportedType":   {providerType: "provider-unknown", apiVer: "v1", wantErr: true},
 		"UnsupportedAPIVer": {providerType: "provider-kubernetes", apiVer: "v3", wantErr: true},
 	}
@@ -552,6 +563,53 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 		}
 		if !groups["kubernetes.m.crossplane.io"] {
 			t.Error("expected v2 group kubernetes.m.crossplane.io")
+		}
+	})
+
+	t.Run("CreatesAllThreeVersions", func(t *testing.T) {
+		var createdGVKs []schema.GroupVersionKind
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
+				}
+				return nil
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				if u, ok := obj.(*unstructured.Unstructured); ok {
+					createdGVKs = append(createdGVKs, u.GroupVersionKind())
+				}
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2", "v2-cluster"}},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(createdGVKs) != 3 {
+			t.Fatalf("expected 3 creates (v1+v2+v2-cluster), got %d: %v", len(createdGVKs), createdGVKs)
+		}
+		kinds := map[string]bool{}
+		for _, gvk := range createdGVKs {
+			kinds[gvk.Group+"/"+gvk.Kind] = true
+		}
+		if !kinds["kubernetes.crossplane.io/ProviderConfig"] {
+			t.Error("expected v1 ProviderConfig")
+		}
+		if !kinds["kubernetes.m.crossplane.io/ProviderConfig"] {
+			t.Error("expected v2 ProviderConfig")
+		}
+		if !kinds["kubernetes.m.crossplane.io/ClusterProviderConfig"] {
+			t.Error("expected v2 ClusterProviderConfig")
 		}
 	})
 

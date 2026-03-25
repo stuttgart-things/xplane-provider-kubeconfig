@@ -80,15 +80,19 @@ type providerConfigMeta struct {
 }
 
 // providerConfigGVKs maps (provider-type, api-version-label) to GVK metadata.
-// "v1" = cluster-scoped (legacy *.crossplane.io), "v2" = namespaced (*.m.crossplane.io).
+// "v1"         = ProviderConfig on *.crossplane.io (cluster-scoped)
+// "v2"         = ProviderConfig on *.m.crossplane.io (namespaced)
+// "v2-cluster" = ClusterProviderConfig on *.m.crossplane.io (cluster-scoped)
 var providerConfigGVKs = map[string]map[string]providerConfigMeta{
 	"provider-kubernetes": {
-		"v1": {GVK: schema.GroupVersionKind{Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: false},
-		"v2": {GVK: schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: true},
+		"v1":         {GVK: schema.GroupVersionKind{Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: false},
+		"v2":         {GVK: schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: true},
+		"v2-cluster": {GVK: schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ClusterProviderConfig"}, Namespaced: false},
 	},
 	"provider-helm": {
-		"v1": {GVK: schema.GroupVersionKind{Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: false},
-		"v2": {GVK: schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: true},
+		"v1":         {GVK: schema.GroupVersionKind{Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: false},
+		"v2":         {GVK: schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: true},
+		"v2-cluster": {GVK: schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ClusterProviderConfig"}, Namespaced: false},
 	},
 }
 

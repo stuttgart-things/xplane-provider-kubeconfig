@@ -37,8 +37,9 @@ type ProviderConfigRef struct {
 	// +kubebuilder:validation:Enum=provider-kubernetes;provider-helm
 	Type string `json:"type"`
 	// APIVersions specifies which downstream ProviderConfig API versions to create.
-	// "v1" creates cluster-scoped resources (e.g. kubernetes.crossplane.io).
-	// "v2" creates namespaced resources (e.g. kubernetes.m.crossplane.io).
+	// "v1" creates ProviderConfig on *.crossplane.io (cluster-scoped).
+	// "v2" creates ProviderConfig on *.m.crossplane.io (namespaced).
+	// "v2-cluster" creates ClusterProviderConfig on *.m.crossplane.io (cluster-scoped).
 	// Defaults to ["v1"] if omitted for backwards compatibility.
 	// +optional
 	// +kubebuilder:default={"v1"}
