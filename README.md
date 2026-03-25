@@ -25,11 +25,26 @@ and downstream ProviderConfigs for the remote clusters.
 
 ### 1. Install the Provider
 
+**Via Crossplane xpkg (recommended):**
+
+```shell
+cat <<EOF | kubectl apply -f -
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-kubeconfig
+spec:
+  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:latest
+EOF
+```
+
+**For development (out-of-cluster):**
+
 ```shell
 # Install CRDs
 kubectl apply -R -f package/crds
 
-# Run the provider (out-of-cluster for development)
+# Run the provider locally
 go run cmd/provider/main.go --debug
 ```
 
