@@ -98,6 +98,10 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh" | sh
           sudo mv crossplane /usr/local/bin/
 
+      - name: Pull runtime image
+        if: steps.meta.outputs.version != ''
+        run: docker pull ghcr.io/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.version }}
+
       - name: Build xpkg
         if: steps.meta.outputs.version != ''
         run: |
