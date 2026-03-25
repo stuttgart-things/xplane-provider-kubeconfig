@@ -12,3 +12,19 @@ metadata:
 spec:
   capabilities:
     - safe-start
+  permissions:
+    rules:
+      # Downstream ProviderConfigs — v1 (cluster-scoped)
+      - apiGroups: ["kubernetes.crossplane.io"]
+        resources: ["providerconfigs"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - apiGroups: ["helm.crossplane.io"]
+        resources: ["providerconfigs"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      # Downstream ProviderConfigs — v2 (namespaced)
+      - apiGroups: ["kubernetes.m.crossplane.io"]
+        resources: ["providerconfigs"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - apiGroups: ["helm.m.crossplane.io"]
+        resources: ["providerconfigs"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
