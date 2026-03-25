@@ -8,14 +8,24 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
-    name: Build, Push Image & xpkg to GHCR
+  semantic-release:
+    name: Semantic Release
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    uses: stuttgart-things/github-workflow-templates/.github/workflows/call-go-release.yaml@main
+    with:
+      runs-on: ubuntu-latest
+      stage-image: false
+      push-kustomize: false
+    secrets: inherit # pragma: allowlist secret
+
+  publish:
+    name: Publish Image & xpkg to GHCR
+    needs: semantic-release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
 
     steps:
@@ -25,14 +35,20 @@ jobs:
           submodules: true
           fetch-depth: 0
 
-      - name: Set build metadata
+      - name: Get latest version tag
         id: meta
         run: |
-          echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          git fetch --tags
+          VERSION=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          COMMIT=$(git rev-parse --short HEAD)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "commit=${COMMIT}" >> $GITHUB_OUTPUT
+          echo "Latest version: ${VERSION}, commit: ${COMMIT}"
 
       # --- Container image ---
 
-      - name: Build & push image to ghcr.io (commit tag)
+      - name: Build & push image (version tag)
+        if: steps.meta.outputs.version != ''
         uses: dagger/dagger-for-github@v6
         with:
           version: "0.20.0"
@@ -42,7 +58,7 @@ jobs:
             bake-image
             --src .
             --repository-name stuttgart-things/provider-kubeconfig
-            --tag ${{ steps.meta.outputs.commit }}
+            --tag ${{ steps.meta.outputs.version }}
             --registry-url ghcr.io
             --registry-username env:GITHUB_ACTOR
             --registry-password env:GITHUB_TOKEN
@@ -52,7 +68,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-      - name: Build & push image to ghcr.io (latest tag)
+      - name: Build & push image (latest tag)
         uses: dagger/dagger-for-github@v6
         with:
           version: "0.20.0"
@@ -83,19 +99,22 @@ jobs:
           sudo mv crossplane /usr/local/bin/
 
       - name: Build xpkg
+        if: steps.meta.outputs.version != ''
         run: |
           crossplane xpkg build \
             --package-root=package \
-            --embed-runtime-image=ghcr.io/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.commit }} \
+            --embed-runtime-image=ghcr.io/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.version }} \
             -o provider-kubeconfig.xpkg
 
-      - name: Push xpkg (commit tag)
+      - name: Push xpkg (version tag)
+        if: steps.meta.outputs.version != ''
         run: |
           crossplane xpkg push \
-            "ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:${{ steps.meta.outputs.commit }}" \
+            "ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:${{ steps.meta.outputs.version }}" \
             -f provider-kubeconfig.xpkg
 
       - name: Push xpkg (latest tag)
+        if: steps.meta.outputs.version != ''
         run: |
           crossplane xpkg push \
             "ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:latest" \
