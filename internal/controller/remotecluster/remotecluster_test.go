@@ -18,6 +18,7 @@ package remotecluster
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -37,6 +38,26 @@ import (
 
 	v1alpha1 "github.com/stuttgart-things/provider-kubeconfig/apis/kubeconfig/v1alpha1"
 )
+
+// testKubeconfig is a minimal valid kubeconfig with a bearer token for ArgoCD tests.
+var testKubeconfig = []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://10.31.101.8:6443
+    certificate-authority-data: dGVzdC1jYS1kYXRh
+  name: test-cluster
+contexts:
+- context:
+    cluster: test-cluster
+    user: admin
+  name: test-cluster
+current-context: test-cluster
+users:
+- name: admin
+  user:
+    token: test-bearer-token
+`)
 
 // --- helpers ---
 
@@ -363,10 +384,12 @@ func TestDeleteCleansUpDownstreamProviderConfigs(t *testing.T) {
 			return nil
 		},
 		MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-			ul := list.(*unstructured.UnstructuredList)
-			item := unstructured.Unstructured{}
-			item.SetName("stale-pc")
-			ul.Items = []unstructured.Unstructured{item}
+			switch l := list.(type) {
+			case *unstructured.UnstructuredList:
+				item := unstructured.Unstructured{}
+				item.SetName("stale-pc")
+				l.Items = []unstructured.Unstructured{item}
+			}
 			return nil
 		},
 	}
@@ -512,7 +535,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-helm", Type: "provider-helm", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -546,7 +569,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -590,7 +613,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2", "v2-cluster"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -635,7 +658,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v2"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -670,7 +693,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes"},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -696,13 +719,16 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
 				return nil
 			},
+			MockUpdate: func(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+				return nil
+			},
 		}
 
 		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
 			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -719,14 +745,19 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 				return nil
 			},
 			MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-				ul := list.(*unstructured.UnstructuredList)
-				stale := unstructured.Unstructured{}
-				stale.SetName("stale-old-pc")
-				ul.Items = []unstructured.Unstructured{stale}
+				switch l := list.(type) {
+				case *unstructured.UnstructuredList:
+					stale := unstructured.Unstructured{}
+					stale.SetName("stale-old-pc")
+					l.Items = []unstructured.Unstructured{stale}
+				}
 				return nil
 			},
 			MockDelete: func(_ context.Context, obj client.Object, _ ...client.DeleteOption) error {
 				deleted = append(deleted, obj.GetName())
+				return nil
+			},
+			MockUpdate: func(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
 				return nil
 			},
 		}
@@ -735,7 +766,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
-		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -748,6 +779,78 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected stale-old-pc to be deleted, deleted: %v", deleted)
+		}
+	})
+
+	t.Run("CreatesArgoCDClusterSecret", func(t *testing.T) {
+		var createdSecrets []string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				return kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				createdSecrets = append(createdSecrets, obj.GetName())
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		found := false
+		for _, n := range createdSecrets {
+			if n == "argocd-dev" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected argocd-dev secret to be created, created: %v", createdSecrets)
+		}
+	})
+
+	t.Run("MixedProviderConfigsAndArgoCD", func(t *testing.T) {
+		var createdNames []string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				createdNames = append(createdNames, obj.GetName())
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace, testKubeconfig)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		nameSet := map[string]bool{}
+		for _, n := range createdNames {
+			nameSet[n] = true
+		}
+		if !nameSet["my-k8s"] {
+			t.Error("expected my-k8s ProviderConfig to be created")
+		}
+		if !nameSet["argocd-dev"] {
+			t.Error("expected argocd-dev ArgoCD secret to be created")
 		}
 	})
 }
@@ -779,6 +882,307 @@ func TestObserveSetsAvailableConditionRequiresSecret(t *testing.T) {
 	if cond.Status == corev1.ConditionTrue {
 		t.Error("Ready should not be True when Secret doesn't exist")
 	}
+}
+
+// --- buildArgoCDClusterSecret tests ---
+
+func TestBuildArgoCDClusterSecret(t *testing.T) {
+	t.Run("ValidKubeconfig", func(t *testing.T) {
+		secret, err := buildArgoCDClusterSecret("argocd-dev", "argocd", "dev-cluster", testKubeconfig)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if secret.Name != "argocd-dev" {
+			t.Errorf("name: want %q, got %q", "argocd-dev", secret.Name)
+		}
+		if secret.Namespace != "argocd" {
+			t.Errorf("namespace: want %q, got %q", "argocd", secret.Namespace)
+		}
+		if secret.Labels[labelArgoCDSecretType] != "cluster" {
+			t.Errorf("label %s: want %q, got %q", labelArgoCDSecretType, "cluster", secret.Labels[labelArgoCDSecretType])
+		}
+		if secret.Labels[labelManagedBy] != "provider-kubeconfig" {
+			t.Errorf("label %s: want %q, got %q", labelManagedBy, "provider-kubeconfig", secret.Labels[labelManagedBy])
+		}
+		if secret.Labels[labelRemoteCluster] != "dev-cluster" {
+			t.Errorf("label %s: want %q, got %q", labelRemoteCluster, "dev-cluster", secret.Labels[labelRemoteCluster])
+		}
+		if secret.StringData["name"] != "dev-cluster" {
+			t.Errorf("stringData.name: want %q, got %q", "dev-cluster", secret.StringData["name"])
+		}
+		if secret.StringData["server"] != "https://10.31.101.8:6443" {
+			t.Errorf("stringData.server: want %q, got %q", "https://10.31.101.8:6443", secret.StringData["server"])
+		}
+
+		// Parse the config JSON and verify bearer token
+		var cfg argoCDClusterConfig
+		if err := json.Unmarshal([]byte(secret.StringData["config"]), &cfg); err != nil {
+			t.Fatalf("cannot parse config JSON: %v", err)
+		}
+		if cfg.BearerToken != "test-bearer-token" {
+			t.Errorf("bearerToken: want %q, got %q", "test-bearer-token", cfg.BearerToken)
+		}
+		if cfg.TLSClientConfig.CAData == "" {
+			t.Error("expected caData to be populated")
+		}
+	})
+
+	t.Run("InvalidKubeconfig", func(t *testing.T) {
+		_, err := buildArgoCDClusterSecret("argocd-dev", "argocd", "dev", []byte("not-a-kubeconfig"))
+		if err == nil {
+			t.Fatal("expected error for invalid kubeconfig")
+		}
+	})
+
+	t.Run("InsecureSkipsTLSVerify", func(t *testing.T) {
+		kc := []byte(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://10.0.0.1:6443
+    insecure-skip-tls-verify: true
+  name: insecure-cluster
+contexts:
+- context:
+    cluster: insecure-cluster
+    user: admin
+  name: insecure-cluster
+current-context: insecure-cluster
+users:
+- name: admin
+  user:
+    token: my-token
+`)
+		secret, err := buildArgoCDClusterSecret("argocd-insecure", "argocd", "insecure", kc)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		var cfg argoCDClusterConfig
+		if err := json.Unmarshal([]byte(secret.StringData["config"]), &cfg); err != nil {
+			t.Fatalf("cannot parse config JSON: %v", err)
+		}
+		if !cfg.TLSClientConfig.Insecure {
+			t.Error("expected insecure=true")
+		}
+		if cfg.TLSClientConfig.CAData != "" {
+			t.Error("expected empty caData when insecure")
+		}
+	})
+}
+
+// --- ensureArgoCDClusterSecret tests ---
+
+func TestEnsureArgoCDClusterSecret(t *testing.T) {
+	t.Run("CreatesWhenNotFound", func(t *testing.T) {
+		var createdName string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				return kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				createdName = obj.GetName()
+				return nil
+			},
+		}
+
+		pc := v1alpha1.ProviderConfigRef{Name: "argocd-dev", Type: "argocd-cluster-secret"}
+		e := &external{kube: mc}
+		err := e.ensureArgoCDClusterSecret(context.Background(), pc, "dev-cluster", testKubeconfig)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if createdName != "argocd-dev" {
+			t.Errorf("expected create for %q, got %q", "argocd-dev", createdName)
+		}
+	})
+
+	t.Run("UpdatesWhenExists", func(t *testing.T) {
+		var updated bool
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+				s := obj.(*corev1.Secret)
+				s.Name = key.Name
+				s.Namespace = key.Namespace
+				return nil
+			},
+			MockUpdate: func(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+				updated = true
+				return nil
+			},
+		}
+
+		pc := v1alpha1.ProviderConfigRef{Name: "argocd-dev", Type: "argocd-cluster-secret", Namespace: "argocd"}
+		e := &external{kube: mc}
+		err := e.ensureArgoCDClusterSecret(context.Background(), pc, "dev-cluster", testKubeconfig)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !updated {
+			t.Error("expected update for existing secret")
+		}
+	})
+
+	t.Run("DefaultsToArgoCDNamespace", func(t *testing.T) {
+		var gotNamespace string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				gotNamespace = key.Namespace
+				return kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+			},
+			MockCreate: func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+				return nil
+			},
+		}
+
+		pc := v1alpha1.ProviderConfigRef{Name: "argocd-dev", Type: "argocd-cluster-secret"}
+		e := &external{kube: mc}
+		_ = e.ensureArgoCDClusterSecret(context.Background(), pc, "dev-cluster", testKubeconfig)
+
+		if gotNamespace != defaultArgoCDNamespace {
+			t.Errorf("expected namespace %q, got %q", defaultArgoCDNamespace, gotNamespace)
+		}
+	})
+
+	t.Run("UsesCustomNamespace", func(t *testing.T) {
+		var gotNamespace string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				gotNamespace = key.Namespace
+				return kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+			},
+			MockCreate: func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+				return nil
+			},
+		}
+
+		pc := v1alpha1.ProviderConfigRef{Name: "argocd-dev", Type: "argocd-cluster-secret", Namespace: "custom-argocd"}
+		e := &external{kube: mc}
+		_ = e.ensureArgoCDClusterSecret(context.Background(), pc, "dev-cluster", testKubeconfig)
+
+		if gotNamespace != "custom-argocd" {
+			t.Errorf("expected namespace %q, got %q", "custom-argocd", gotNamespace)
+		}
+	})
+}
+
+// --- deleteStaleArgoCDSecrets tests ---
+
+func TestDeleteStaleArgoCDSecrets(t *testing.T) {
+	t.Run("DeletesOrphaned", func(t *testing.T) {
+		var deleted []string
+		mc := &mockClient{
+			MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+				sl := list.(*corev1.SecretList)
+				sl.Items = []corev1.Secret{
+					{ObjectMeta: metav1.ObjectMeta{Name: "orphaned-argocd"}},
+					{ObjectMeta: metav1.ObjectMeta{Name: "still-desired"}},
+				}
+				return nil
+			},
+			MockDelete: func(_ context.Context, obj client.Object, _ ...client.DeleteOption) error {
+				deleted = append(deleted, obj.GetName())
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "still-desired", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		err := e.deleteStaleArgoCDSecrets(context.Background(), cr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(deleted) != 1 || deleted[0] != "orphaned-argocd" {
+			t.Errorf("expected only orphaned-argocd deleted, got: %v", deleted)
+		}
+	})
+
+	t.Run("NoDeleteWhenAllDesired", func(t *testing.T) {
+		var deleted []string
+		mc := &mockClient{
+			MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+				sl := list.(*corev1.SecretList)
+				sl.Items = []corev1.Secret{
+					{ObjectMeta: metav1.ObjectMeta{Name: "argocd-dev"}},
+				}
+				return nil
+			},
+			MockDelete: func(_ context.Context, obj client.Object, _ ...client.DeleteOption) error {
+				deleted = append(deleted, obj.GetName())
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		err := e.deleteStaleArgoCDSecrets(context.Background(), cr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(deleted) != 0 {
+			t.Errorf("expected no deletes, got: %v", deleted)
+		}
+	})
+}
+
+// --- downstreamProviderConfigsUpToDate ArgoCD tests ---
+
+func TestDownstreamProviderConfigsUpToDateArgoCD(t *testing.T) {
+	t.Run("ArgoCDSecretExists", func(t *testing.T) {
+		mc := &mockClient{
+			MockGet: func(_ context.Context, _ types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				return nil
+			},
+		}
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		if !e.downstreamProviderConfigsUpToDate(context.Background(), cr) {
+			t.Error("expected up-to-date when ArgoCD secret exists")
+		}
+	})
+
+	t.Run("ArgoCDSecretMissing", func(t *testing.T) {
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				return kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+			},
+		}
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		if e.downstreamProviderConfigsUpToDate(context.Background(), cr) {
+			t.Error("expected not up-to-date when ArgoCD secret is missing")
+		}
+	})
+
+	t.Run("ArgoCDDefaultNamespace", func(t *testing.T) {
+		var gotNamespace string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, _ client.Object, _ ...client.GetOption) error {
+				gotNamespace = key.Namespace
+				return nil
+			},
+		}
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "argocd-dev", Type: "argocd-cluster-secret"},
+		})
+		e := &external{kube: mc}
+		e.downstreamProviderConfigsUpToDate(context.Background(), cr)
+
+		if gotNamespace != defaultArgoCDNamespace {
+			t.Errorf("expected namespace %q, got %q", defaultArgoCDNamespace, gotNamespace)
+		}
+	})
 }
 
 // Silence unused import warnings - these are used by mock methods

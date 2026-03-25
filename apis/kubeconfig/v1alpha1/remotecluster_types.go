@@ -33,17 +33,22 @@ type RemoteClusterSource struct {
 type ProviderConfigRef struct {
 	// Name of the ProviderConfig to create.
 	Name string `json:"name"`
-	// Type of the downstream provider. e.g. provider-kubernetes, provider-helm
-	// +kubebuilder:validation:Enum=provider-kubernetes;provider-helm
+	// Type of the downstream provider. e.g. provider-kubernetes, provider-helm, argocd-cluster-secret
+	// +kubebuilder:validation:Enum=provider-kubernetes;provider-helm;argocd-cluster-secret
 	Type string `json:"type"`
 	// APIVersions specifies which downstream ProviderConfig API versions to create.
 	// "v1" creates ProviderConfig on *.crossplane.io (cluster-scoped).
 	// "v2" creates ProviderConfig on *.m.crossplane.io (namespaced).
 	// "v2-cluster" creates ClusterProviderConfig on *.m.crossplane.io (cluster-scoped).
 	// Defaults to ["v1"] if omitted for backwards compatibility.
+	// Not used for argocd-cluster-secret type.
 	// +optional
 	// +kubebuilder:default={"v1"}
 	APIVersions []string `json:"apiVersions,omitempty"`
+	// Namespace is the target namespace for the created resource.
+	// Used by argocd-cluster-secret to specify the ArgoCD namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // RemoteClusterParameters are the configurable fields of a RemoteCluster.

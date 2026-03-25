@@ -19,6 +19,7 @@ package remotecluster
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 
 	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -70,7 +72,14 @@ const (
 	annotationContentHash  = "kubeconfig.stuttgart-things.com/content-hash"
 	labelManagedBy         = "app.kubernetes.io/managed-by"
 	labelRemoteCluster     = "remotecluster.kubeconfig.stuttgart-things.com/name"
+	labelArgoCDSecretType  = "argocd.argoproj.io/secret-type"
 	defaultSecretNamespace = "crossplane-system"
+	defaultArgoCDNamespace = "argocd"
+
+	errBuildArgoCDSecret  = "cannot build ArgoCD cluster secret"
+	errCreateArgoCDSecret = "cannot create ArgoCD cluster secret"
+	errDeleteArgoCDSecret = "cannot delete ArgoCD cluster secret"
+	errParseKubeconfig    = "cannot parse kubeconfig for ArgoCD secret"
 )
 
 // providerConfigMeta holds GVK and scope info for a downstream ProviderConfig.
@@ -323,6 +332,62 @@ func buildDownstreamProviderConfig(meta providerConfigMeta, pcName, secretName, 
 	return u, nil
 }
 
+// argoCDClusterConfig is the JSON config block for an ArgoCD cluster secret.
+type argoCDClusterConfig struct {
+	BearerToken     string              `json:"bearerToken"`
+	TLSClientConfig argoCDTLSConfig     `json:"tlsClientConfig"`
+}
+
+// argoCDTLSConfig holds TLS settings for the ArgoCD cluster config.
+type argoCDTLSConfig struct {
+	Insecure bool   `json:"insecure"`
+	CAData   string `json:"caData,omitempty"`
+}
+
+// buildArgoCDClusterSecret creates a Kubernetes Secret in the ArgoCD cluster secret format
+// by extracting the server URL and bearer token from the kubeconfig.
+func buildArgoCDClusterSecret(name, namespace, crName string, kubeconfig []byte) (*corev1.Secret, error) {
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	if err != nil {
+		return nil, errors.Wrap(err, errParseKubeconfig)
+	}
+
+	argoConfig := argoCDClusterConfig{
+		BearerToken: cfg.BearerToken,
+		TLSClientConfig: argoCDTLSConfig{
+			Insecure: cfg.TLSClientConfig.Insecure,
+		},
+	}
+
+	// Include CA data if present and not insecure
+	if len(cfg.TLSClientConfig.CAData) > 0 && !cfg.TLSClientConfig.Insecure {
+		argoConfig.TLSClientConfig.CAData = string(cfg.TLSClientConfig.CAData)
+	}
+
+	configJSON, err := json.Marshal(argoConfig)
+	if err != nil {
+		return nil, errors.Wrap(err, "cannot marshal ArgoCD cluster config")
+	}
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				labelManagedBy:        "provider-kubeconfig",
+				labelRemoteCluster:    crName,
+				labelArgoCDSecretType: "cluster",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			"name":   crName,
+			"server": cfg.Host,
+			"config": string(configJSON),
+		},
+	}, nil
+}
+
 // lookupProviderConfigMeta resolves the providerConfigMeta for a given type and API version label.
 func lookupProviderConfigMeta(providerType, apiVer string) (providerConfigMeta, error) {
 	versions, ok := providerConfigGVKs[providerType]
@@ -367,10 +432,17 @@ func (c *external) ensureOneProviderConfig(ctx context.Context, meta providerCon
 
 // ensureDownstreamProviderConfigs creates any missing downstream ProviderConfigs
 // and deletes stale ones that are no longer in the spec.
-func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1alpha1.RemoteCluster, sName, sNamespace string) error {
+func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1alpha1.RemoteCluster, sName, sNamespace string, kubeconfig []byte) error {
 	desired := make(map[desiredKey]bool)
 
 	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
+		if pc.Type == "argocd-cluster-secret" {
+			if err := c.ensureArgoCDClusterSecret(ctx, pc, cr.GetName(), kubeconfig); err != nil {
+				return err
+			}
+			continue
+		}
+
 		for _, apiVer := range resolveAPIVersions(pc) {
 			meta, err := lookupProviderConfigMeta(pc.Type, apiVer)
 			if err != nil {
@@ -391,6 +463,77 @@ func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1al
 		}
 	}
 
+	// Delete stale ArgoCD cluster secrets
+	if err := c.deleteStaleArgoCDSecrets(ctx, cr); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ensureArgoCDClusterSecret creates an ArgoCD cluster secret if it doesn't exist,
+// or updates it if the kubeconfig has changed.
+func (c *external) ensureArgoCDClusterSecret(ctx context.Context, pc v1alpha1.ProviderConfigRef, crName string, kubeconfig []byte) error {
+	ns := pc.Namespace
+	if ns == "" {
+		ns = defaultArgoCDNamespace
+	}
+
+	desired, err := buildArgoCDClusterSecret(pc.Name, ns, crName, kubeconfig)
+	if err != nil {
+		return errors.Wrap(err, errBuildArgoCDSecret)
+	}
+
+	existing := &corev1.Secret{}
+	err = c.kube.Get(ctx, types.NamespacedName{Name: pc.Name, Namespace: ns}, existing)
+	if kerrors.IsNotFound(err) {
+		if err := c.kube.Create(ctx, desired); err != nil {
+			return errors.Wrap(err, errCreateArgoCDSecret)
+		}
+		return nil
+	}
+	if err != nil {
+		return errors.Wrapf(err, "cannot check ArgoCD cluster secret %q", pc.Name)
+	}
+
+	// Update if content changed
+	existing.StringData = desired.StringData
+	existing.Labels = desired.Labels
+	if err := c.kube.Update(ctx, existing); err != nil {
+		return errors.Wrapf(err, "cannot update ArgoCD cluster secret %q", pc.Name)
+	}
+	return nil
+}
+
+// deleteStaleArgoCDSecrets deletes ArgoCD cluster secrets owned by this CR
+// that are no longer in the spec.
+func (c *external) deleteStaleArgoCDSecrets(ctx context.Context, cr *v1alpha1.RemoteCluster) error {
+	// Build set of desired ArgoCD secret names
+	desired := make(map[string]bool)
+	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
+		if pc.Type == "argocd-cluster-secret" {
+			desired[pc.Name] = true
+		}
+	}
+
+	// List all secrets with our labels
+	secretList := &corev1.SecretList{}
+	selector := labels.SelectorFromSet(labels.Set{
+		labelManagedBy:        "provider-kubeconfig",
+		labelRemoteCluster:    cr.GetName(),
+		labelArgoCDSecretType: "cluster",
+	})
+	if err := c.kube.List(ctx, secretList, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return errors.Wrap(err, "cannot list ArgoCD cluster secrets")
+	}
+
+	for i := range secretList.Items {
+		if !desired[secretList.Items[i].Name] {
+			if err := c.kube.Delete(ctx, &secretList.Items[i]); err != nil && !kerrors.IsNotFound(err) {
+				return errors.Wrapf(err, "%s %q", errDeleteArgoCDSecret, secretList.Items[i].Name)
+			}
+		}
+	}
 	return nil
 }
 
@@ -423,23 +566,52 @@ func (c *external) deleteStaleProviderConfigs(ctx context.Context, meta provider
 	return nil
 }
 
-// deleteAllDownstreamProviderConfigs deletes all ProviderConfigs owned by this CR.
+// deleteAllDownstreamProviderConfigs deletes all ProviderConfigs and ArgoCD secrets owned by this CR.
 func (c *external) deleteAllDownstreamProviderConfigs(ctx context.Context, crName, namespace string) error {
 	for _, meta := range allProviderConfigMetas() {
 		if err := c.deleteStaleProviderConfigs(ctx, meta, crName, namespace, nil); err != nil {
 			return err
 		}
 	}
+
+	// Delete all ArgoCD cluster secrets owned by this CR
+	secretList := &corev1.SecretList{}
+	selector := labels.SelectorFromSet(labels.Set{
+		labelManagedBy:        "provider-kubeconfig",
+		labelRemoteCluster:    crName,
+		labelArgoCDSecretType: "cluster",
+	})
+	if err := c.kube.List(ctx, secretList, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return errors.Wrap(err, "cannot list ArgoCD cluster secrets for deletion")
+	}
+	for i := range secretList.Items {
+		if err := c.kube.Delete(ctx, &secretList.Items[i]); err != nil && !kerrors.IsNotFound(err) {
+			return errors.Wrapf(err, "%s %q", errDeleteArgoCDSecret, secretList.Items[i].Name)
+		}
+	}
+
 	return nil
 }
 
-// downstreamProviderConfigsUpToDate checks that all desired downstream ProviderConfigs exist.
+// downstreamProviderConfigsUpToDate checks that all desired downstream ProviderConfigs and ArgoCD secrets exist.
 func (c *external) downstreamProviderConfigsUpToDate(ctx context.Context, cr *v1alpha1.RemoteCluster) bool {
 	ns := cr.Spec.ForProvider.SecretNamespace
 	if ns == "" {
 		ns = defaultSecretNamespace
 	}
 	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
+		if pc.Type == "argocd-cluster-secret" {
+			argoNS := pc.Namespace
+			if argoNS == "" {
+				argoNS = defaultArgoCDNamespace
+			}
+			s := &corev1.Secret{}
+			if err := c.kube.Get(ctx, types.NamespacedName{Name: pc.Name, Namespace: argoNS}, s); err != nil {
+				return false
+			}
+			continue
+		}
+
 		for _, apiVer := range resolveAPIVersions(pc) {
 			meta, err := lookupProviderConfigMeta(pc.Type, apiVer)
 			if err != nil {
@@ -563,8 +735,8 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalCreation{}, errors.Wrap(err, errCreateSecret)
 	}
 
-	// Create downstream ProviderConfigs
-	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns); err != nil {
+	// Create downstream ProviderConfigs and ArgoCD secrets
+	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns, content); err != nil {
 		return managed.ExternalCreation{}, err
 	}
 
@@ -614,8 +786,8 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateSecret)
 	}
 
-	// Reconcile downstream ProviderConfigs (create missing, delete stale)
-	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns); err != nil {
+	// Reconcile downstream ProviderConfigs and ArgoCD secrets (create missing, delete stale)
+	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns, content); err != nil {
 		return managed.ExternalUpdate{}, err
 	}
 
