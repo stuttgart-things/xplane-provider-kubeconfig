@@ -130,33 +130,38 @@ func TestContentHash(t *testing.T) {
 
 func TestBuildDownstreamProviderConfig(t *testing.T) {
 	cases := map[string]struct {
-		pcRef   v1alpha1.ProviderConfigRef
-		wantGVK schema.GroupVersionKind
-		wantErr bool
+		meta          providerConfigMeta
+		pcName        string
+		wantGVK       schema.GroupVersionKind
+		wantNamespace string
 	}{
-		"ProviderKubernetes": {
-			pcRef:   v1alpha1.ProviderConfigRef{Name: "my-k8s", Type: "provider-kubernetes"},
+		"ProviderKubernetesV1": {
+			meta:    providerConfigGVKs["provider-kubernetes"]["v1"],
+			pcName:  "my-k8s",
 			wantGVK: schema.GroupVersionKind{Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"},
 		},
-		"ProviderHelm": {
-			pcRef:   v1alpha1.ProviderConfigRef{Name: "my-helm", Type: "provider-helm"},
+		"ProviderHelmV1": {
+			meta:    providerConfigGVKs["provider-helm"]["v1"],
+			pcName:  "my-helm",
 			wantGVK: schema.GroupVersionKind{Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
 		},
-		"UnsupportedType": {
-			pcRef:   v1alpha1.ProviderConfigRef{Name: "bad", Type: "provider-unknown"},
-			wantErr: true,
+		"ProviderKubernetesV2": {
+			meta:          providerConfigGVKs["provider-kubernetes"]["v2"],
+			pcName:        "my-k8s",
+			wantGVK:       schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"},
+			wantNamespace: defaultSecretNamespace,
+		},
+		"ProviderHelmV2": {
+			meta:          providerConfigGVKs["provider-helm"]["v2"],
+			pcName:        "my-helm",
+			wantGVK:       schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
+			wantNamespace: defaultSecretNamespace,
 		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			u, err := buildDownstreamProviderConfig(tc.pcRef, "kubeconfig-dev", defaultSecretNamespace, "dev")
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
+			u, err := buildDownstreamProviderConfig(tc.meta, tc.pcName, "kubeconfig-dev", defaultSecretNamespace, "dev")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -164,8 +169,11 @@ func TestBuildDownstreamProviderConfig(t *testing.T) {
 			if diff := cmp.Diff(tc.wantGVK, u.GroupVersionKind()); diff != "" {
 				t.Errorf("GVK: -want, +got:\n%s", diff)
 			}
-			if u.GetName() != tc.pcRef.Name {
-				t.Errorf("name: want %q, got %q", tc.pcRef.Name, u.GetName())
+			if u.GetName() != tc.pcName {
+				t.Errorf("name: want %q, got %q", tc.pcName, u.GetName())
+			}
+			if u.GetNamespace() != tc.wantNamespace {
+				t.Errorf("namespace: want %q, got %q", tc.wantNamespace, u.GetNamespace())
 			}
 			if u.GetLabels()[labelRemoteCluster] != "dev" {
 				t.Errorf("label %s: want %q, got %q", labelRemoteCluster, "dev", u.GetLabels()[labelRemoteCluster])
@@ -184,6 +192,60 @@ func TestBuildDownstreamProviderConfig(t *testing.T) {
 			}
 			if secretRef["key"] != "kubeconfig" {
 				t.Errorf("secretRef.key: want %q, got %v", "kubeconfig", secretRef["key"])
+			}
+		})
+	}
+}
+
+func TestLookupProviderConfigMeta(t *testing.T) {
+	cases := map[string]struct {
+		providerType string
+		apiVer       string
+		wantErr      bool
+	}{
+		"ValidV1":           {providerType: "provider-kubernetes", apiVer: "v1"},
+		"ValidV2":           {providerType: "provider-helm", apiVer: "v2"},
+		"UnsupportedType":   {providerType: "provider-unknown", apiVer: "v1", wantErr: true},
+		"UnsupportedAPIVer": {providerType: "provider-kubernetes", apiVer: "v3", wantErr: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := lookupProviderConfigMeta(tc.providerType, tc.apiVer)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveAPIVersions(t *testing.T) {
+	cases := map[string]struct {
+		pcRef v1alpha1.ProviderConfigRef
+		want  []string
+	}{
+		"DefaultsToV1": {
+			pcRef: v1alpha1.ProviderConfigRef{Name: "x", Type: "provider-kubernetes"},
+			want:  []string{"v1"},
+		},
+		"ExplicitV2": {
+			pcRef: v1alpha1.ProviderConfigRef{Name: "x", Type: "provider-kubernetes", APIVersions: []string{"v2"}},
+			want:  []string{"v2"},
+		},
+		"BothVersions": {
+			pcRef: v1alpha1.ProviderConfigRef{Name: "x", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2"}},
+			want:  []string{"v1", "v2"},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := resolveAPIVersions(tc.pcRef)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("-want, +got:\n%s", diff)
 			}
 		})
 	}
@@ -346,7 +408,28 @@ func TestDownstreamProviderConfigsUpToDate(t *testing.T) {
 		getErr error
 		want   bool
 	}{
-		"AllExist": {
+		"AllExistV1": {
+			pcs: []v1alpha1.ProviderConfigRef{
+				{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
+			},
+			getErr: nil,
+			want:   true,
+		},
+		"AllExistV2": {
+			pcs: []v1alpha1.ProviderConfigRef{
+				{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v2"}},
+			},
+			getErr: nil,
+			want:   true,
+		},
+		"AllExistBothVersions": {
+			pcs: []v1alpha1.ProviderConfigRef{
+				{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2"}},
+			},
+			getErr: nil,
+			want:   true,
+		},
+		"DefaultsToV1": {
 			pcs: []v1alpha1.ProviderConfigRef{
 				{Name: "my-k8s", Type: "provider-kubernetes"},
 			},
@@ -355,7 +438,7 @@ func TestDownstreamProviderConfigsUpToDate(t *testing.T) {
 		},
 		"MissingOne": {
 			pcs: []v1alpha1.ProviderConfigRef{
-				{Name: "my-k8s", Type: "provider-kubernetes"},
+				{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
 			},
 			getErr: kerrors.NewNotFound(schema.GroupResource{}, "my-k8s"),
 			want:   false,
@@ -395,11 +478,10 @@ func TestDownstreamProviderConfigsUpToDate(t *testing.T) {
 // --- ensureDownstreamProviderConfigs tests ---
 
 func TestEnsureDownstreamProviderConfigs(t *testing.T) {
-	t.Run("CreatesMissing", func(t *testing.T) {
+	t.Run("CreatesMissingV1", func(t *testing.T) {
 		var created []string
 		mc := &mockClient{
 			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
-				// Check if it's an unstructured (downstream PC) or a Secret
 				if _, ok := obj.(*unstructured.Unstructured); ok {
 					return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
 				}
@@ -415,8 +497,8 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 		}
 
 		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
-			{Name: "my-k8s", Type: "provider-kubernetes"},
-			{Name: "my-helm", Type: "provider-helm"},
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
+			{Name: "my-helm", Type: "provider-helm", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
 		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
@@ -426,6 +508,120 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 
 		if len(created) != 2 {
 			t.Errorf("expected 2 creates, got %d: %v", len(created), created)
+		}
+	})
+
+	t.Run("CreatesBothV1AndV2", func(t *testing.T) {
+		var createdGVKs []schema.GroupVersionKind
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
+				}
+				return nil
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				if u, ok := obj.(*unstructured.Unstructured); ok {
+					createdGVKs = append(createdGVKs, u.GroupVersionKind())
+				}
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1", "v2"}},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(createdGVKs) != 2 {
+			t.Fatalf("expected 2 creates (v1+v2), got %d: %v", len(createdGVKs), createdGVKs)
+		}
+		groups := map[string]bool{}
+		for _, gvk := range createdGVKs {
+			groups[gvk.Group] = true
+		}
+		if !groups["kubernetes.crossplane.io"] {
+			t.Error("expected v1 group kubernetes.crossplane.io")
+		}
+		if !groups["kubernetes.m.crossplane.io"] {
+			t.Error("expected v2 group kubernetes.m.crossplane.io")
+		}
+	})
+
+	t.Run("V2SetsNamespace", func(t *testing.T) {
+		var createdNS string
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
+				}
+				return nil
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				createdNS = obj.GetNamespace()
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v2"}},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if createdNS != defaultSecretNamespace {
+			t.Errorf("v2 namespace: want %q, got %q", defaultSecretNamespace, createdNS)
+		}
+	})
+
+	t.Run("DefaultsToV1", func(t *testing.T) {
+		var createdGVKs []schema.GroupVersionKind
+		mc := &mockClient{
+			MockGet: func(_ context.Context, key types.NamespacedName, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*unstructured.Unstructured); ok {
+					return kerrors.NewNotFound(schema.GroupResource{}, key.Name)
+				}
+				return nil
+			},
+			MockCreate: func(_ context.Context, obj client.Object, _ ...client.CreateOption) error {
+				if u, ok := obj.(*unstructured.Unstructured); ok {
+					createdGVKs = append(createdGVKs, u.GroupVersionKind())
+				}
+				return nil
+			},
+			MockList: func(_ context.Context, _ client.ObjectList, _ ...client.ListOption) error {
+				return nil
+			},
+		}
+
+		// No APIVersions set — should default to v1
+		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
+			{Name: "my-k8s", Type: "provider-kubernetes"},
+		})
+		e := &external{kube: mc}
+		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(createdGVKs) != 1 {
+			t.Fatalf("expected 1 create, got %d", len(createdGVKs))
+		}
+		if createdGVKs[0].Group != "kubernetes.crossplane.io" {
+			t.Errorf("expected v1 group, got %q", createdGVKs[0].Group)
 		}
 	})
 
@@ -445,7 +641,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 		}
 
 		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
-			{Name: "my-k8s", Type: "provider-kubernetes"},
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
 		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
@@ -477,9 +673,8 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 			},
 		}
 
-		// Desired has "my-k8s" but list returns "stale-old-pc"
 		cr := newRemoteClusterWithProviderConfigs("dev", "default", "clusters/dev.yaml", []v1alpha1.ProviderConfigRef{
-			{Name: "my-k8s", Type: "provider-kubernetes"},
+			{Name: "my-k8s", Type: "provider-kubernetes", APIVersions: []string{"v1"}},
 		})
 		e := &external{kube: mc}
 		err := e.ensureDownstreamProviderConfigs(context.Background(), cr, "kubeconfig-dev", defaultSecretNamespace)
