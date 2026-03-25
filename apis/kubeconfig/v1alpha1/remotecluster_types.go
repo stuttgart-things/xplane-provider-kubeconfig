@@ -36,6 +36,13 @@ type ProviderConfigRef struct {
 	// Type of the downstream provider. e.g. provider-kubernetes, provider-helm
 	// +kubebuilder:validation:Enum=provider-kubernetes;provider-helm
 	Type string `json:"type"`
+	// APIVersions specifies which downstream ProviderConfig API versions to create.
+	// "v1" creates cluster-scoped resources (e.g. kubernetes.crossplane.io).
+	// "v2" creates namespaced resources (e.g. kubernetes.m.crossplane.io).
+	// Defaults to ["v1"] if omitted for backwards compatibility.
+	// +optional
+	// +kubebuilder:default={"v1"}
+	APIVersions []string `json:"apiVersions,omitempty"`
 }
 
 // RemoteClusterParameters are the configurable fields of a RemoteCluster.

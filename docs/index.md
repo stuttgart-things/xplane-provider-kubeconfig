@@ -4,8 +4,8 @@ Crossplane Provider that manages remote Kubernetes cluster kubeconfigs. It reads
 
 ## Features
 
-- **Git-based kubeconfig management** -- clones/pulls a Git repo and reads encrypted kubeconfig files
-- **SOPS/age decryption** -- decrypts kubeconfigs encrypted with SOPS using age keys
+- **Git-based kubeconfig management** -- clones/pulls a Git repo and reads kubeconfig files (encrypted or plain)
+- **SOPS/age decryption** -- optionally decrypts kubeconfigs encrypted with SOPS using age keys; plain kubeconfigs are supported without decryption
 - **Drift detection** -- compares SHA-256 content hashes on every poll; automatically updates the Secret when the Git file changes
 - **Downstream ProviderConfigs** -- automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig resources referencing the kubeconfig Secret
 - **Remote cluster status** -- gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs)
@@ -14,8 +14,8 @@ Crossplane Provider that manages remote Kubernetes cluster kubeconfigs. It reads
 
 When you create a `RemoteCluster` resource, the provider performs these 5 steps:
 
-1. **Clone the Git repo** referenced in the `ClusterProviderConfig` and read the encrypted kubeconfig file at the specified path
-2. **Decrypt** the kubeconfig using the SOPS/age key from the referenced Secret
+1. **Clone the Git repo** referenced in the `ClusterProviderConfig` and read the kubeconfig file at the specified path
+2. **Decrypt** the kubeconfig using the SOPS/age key from the referenced Secret (skipped for unencrypted files)
 3. **Create a Kubernetes Secret** named `kubeconfig-<remotecluster-name>` containing the decrypted kubeconfig
 4. **Create downstream ProviderConfigs** (optional) for `provider-kubernetes` and/or `provider-helm` that reference the kubeconfig Secret
 5. **Populate status** with remote cluster metadata (Kubernetes version, API endpoint, node count, CIDRs)
@@ -46,10 +46,12 @@ kind: Provider
 metadata:
   name: provider-kubeconfig
 spec:
-  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:latest
+  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:v0.2.1  # or :latest
 ```
 
 ### Step 2: Create the age decryption key Secret
+
+> **Note:** The decryption Secret must exist even when using unencrypted kubeconfigs. For plain kubeconfigs, create the Secret with an empty key -- the provider will skip decryption automatically.
 
 ```yaml
 apiVersion: v1

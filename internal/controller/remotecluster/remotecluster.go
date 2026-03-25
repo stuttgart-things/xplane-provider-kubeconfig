@@ -73,9 +73,42 @@ const (
 	defaultSecretNamespace = "crossplane-system"
 )
 
-var providerConfigGVK = map[string]schema.GroupVersionKind{
-	"provider-kubernetes": {Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"},
-	"provider-helm":       {Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"},
+// providerConfigMeta holds GVK and scope info for a downstream ProviderConfig.
+type providerConfigMeta struct {
+	GVK        schema.GroupVersionKind
+	Namespaced bool
+}
+
+// providerConfigGVKs maps (provider-type, api-version-label) to GVK metadata.
+// "v1" = cluster-scoped (legacy *.crossplane.io), "v2" = namespaced (*.m.crossplane.io).
+var providerConfigGVKs = map[string]map[string]providerConfigMeta{
+	"provider-kubernetes": {
+		"v1": {GVK: schema.GroupVersionKind{Group: "kubernetes.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: false},
+		"v2": {GVK: schema.GroupVersionKind{Group: "kubernetes.m.crossplane.io", Version: "v1alpha1", Kind: "ProviderConfig"}, Namespaced: true},
+	},
+	"provider-helm": {
+		"v1": {GVK: schema.GroupVersionKind{Group: "helm.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: false},
+		"v2": {GVK: schema.GroupVersionKind{Group: "helm.m.crossplane.io", Version: "v1beta1", Kind: "ProviderConfig"}, Namespaced: true},
+	},
+}
+
+// resolveAPIVersions returns the API versions for a ProviderConfigRef, defaulting to ["v1"].
+func resolveAPIVersions(pcRef v1alpha1.ProviderConfigRef) []string {
+	if len(pcRef.APIVersions) == 0 {
+		return []string{"v1"}
+	}
+	return pcRef.APIVersions
+}
+
+// allProviderConfigMetas returns all providerConfigMeta entries across all types and versions.
+func allProviderConfigMetas() []providerConfigMeta {
+	var all []providerConfigMeta
+	for _, versions := range providerConfigGVKs {
+		for _, meta := range versions {
+			all = append(all, meta)
+		}
+	}
+	return all
 }
 
 // SetupGated adds a controller that reconciles RemoteCluster managed resources with safe-start support.
@@ -259,20 +292,18 @@ func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byt
 }
 
 // buildDownstreamProviderConfig builds an unstructured downstream ProviderConfig
-// for provider-kubernetes or provider-helm.
-func buildDownstreamProviderConfig(pcRef v1alpha1.ProviderConfigRef, secretName, secretNamespace, crName string) (*unstructured.Unstructured, error) {
-	gvk, ok := providerConfigGVK[pcRef.Type]
-	if !ok {
-		return nil, errors.Errorf("unsupported downstream provider type: %s", pcRef.Type)
-	}
-
+// for provider-kubernetes or provider-helm using the resolved providerConfigMeta.
+func buildDownstreamProviderConfig(meta providerConfigMeta, pcName, secretName, secretNamespace, crName string) (*unstructured.Unstructured, error) {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(gvk)
-	u.SetName(pcRef.Name)
+	u.SetGroupVersionKind(meta.GVK)
+	u.SetName(pcName)
 	u.SetLabels(map[string]string{
 		labelManagedBy:     "provider-kubeconfig",
 		labelRemoteCluster: crName,
 	})
+	if meta.Namespaced {
+		u.SetNamespace(secretNamespace)
+	}
 
 	if err := unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"source": "Secret",
@@ -288,35 +319,66 @@ func buildDownstreamProviderConfig(pcRef v1alpha1.ProviderConfigRef, secretName,
 	return u, nil
 }
 
+// lookupProviderConfigMeta resolves the providerConfigMeta for a given type and API version label.
+func lookupProviderConfigMeta(providerType, apiVer string) (providerConfigMeta, error) {
+	versions, ok := providerConfigGVKs[providerType]
+	if !ok {
+		return providerConfigMeta{}, errors.Errorf("unsupported downstream provider type: %s", providerType)
+	}
+	meta, ok := versions[apiVer]
+	if !ok {
+		return providerConfigMeta{}, errors.Errorf("unsupported API version %q for provider type %s", apiVer, providerType)
+	}
+	return meta, nil
+}
+
+// desiredKey uniquely identifies a desired downstream ProviderConfig by name and GVK.
+type desiredKey struct {
+	Name string
+	GVK  schema.GroupVersionKind
+}
+
 // ensureDownstreamProviderConfigs creates any missing downstream ProviderConfigs
 // and deletes stale ones that are no longer in the spec.
 func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1alpha1.RemoteCluster, sName, sNamespace string) error {
-	desired := make(map[string]v1alpha1.ProviderConfigRef)
+	desired := make(map[desiredKey]bool)
+
 	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
-		desired[pc.Name] = pc
-
-		u, err := buildDownstreamProviderConfig(pc, sName, sNamespace, cr.GetName())
-		if err != nil {
-			return err
-		}
-
-		existing := &unstructured.Unstructured{}
-		existing.SetGroupVersionKind(u.GroupVersionKind())
-		err = c.kube.Get(ctx, types.NamespacedName{Name: pc.Name}, existing)
-		if kerrors.IsNotFound(err) {
-			if err := c.kube.Create(ctx, u); err != nil {
-				return errors.Wrapf(err, "%s %q", errCreateProviderCfg, pc.Name)
+		for _, apiVer := range resolveAPIVersions(pc) {
+			meta, err := lookupProviderConfigMeta(pc.Type, apiVer)
+			if err != nil {
+				return err
 			}
-			continue
-		}
-		if err != nil {
-			return errors.Wrapf(err, "cannot check downstream ProviderConfig %q", pc.Name)
+
+			desired[desiredKey{Name: pc.Name, GVK: meta.GVK}] = true
+
+			u, err := buildDownstreamProviderConfig(meta, pc.Name, sName, sNamespace, cr.GetName())
+			if err != nil {
+				return err
+			}
+
+			existing := &unstructured.Unstructured{}
+			existing.SetGroupVersionKind(meta.GVK)
+			key := types.NamespacedName{Name: pc.Name}
+			if meta.Namespaced {
+				key.Namespace = sNamespace
+			}
+			err = c.kube.Get(ctx, key, existing)
+			if kerrors.IsNotFound(err) {
+				if err := c.kube.Create(ctx, u); err != nil {
+					return errors.Wrapf(err, "%s %q (apiVersion %s)", errCreateProviderCfg, pc.Name, apiVer)
+				}
+				continue
+			}
+			if err != nil {
+				return errors.Wrapf(err, "cannot check downstream ProviderConfig %q", pc.Name)
+			}
 		}
 	}
 
 	// Delete stale ProviderConfigs that have our label but are no longer desired
-	for _, gvk := range providerConfigGVK {
-		if err := c.deleteStaleProviderConfigs(ctx, gvk, cr.GetName(), desired); err != nil {
+	for _, meta := range allProviderConfigMetas() {
+		if err := c.deleteStaleProviderConfigs(ctx, meta, cr.GetName(), sNamespace, desired); err != nil {
 			return err
 		}
 	}
@@ -326,13 +388,17 @@ func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1al
 
 // deleteStaleProviderConfigs deletes ProviderConfigs with the ownership label
 // that are no longer in the desired set.
-func (c *external) deleteStaleProviderConfigs(ctx context.Context, gvk schema.GroupVersionKind, crName string, desired map[string]v1alpha1.ProviderConfigRef) error {
+func (c *external) deleteStaleProviderConfigs(ctx context.Context, meta providerConfigMeta, crName, namespace string, desired map[desiredKey]bool) error {
 	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(gvk)
+	list.SetGroupVersionKind(meta.GVK)
 	selector := labels.SelectorFromSet(labels.Set{
 		labelRemoteCluster: crName,
 	})
-	if err := c.kube.List(ctx, list, &client.ListOptions{LabelSelector: selector}); err != nil {
+	opts := &client.ListOptions{LabelSelector: selector}
+	if meta.Namespaced {
+		opts.Namespace = namespace
+	}
+	if err := c.kube.List(ctx, list, opts); err != nil {
 		if !kerrors.IsNotFound(err) {
 			return errors.Wrap(err, errListProviderCfg)
 		}
@@ -340,7 +406,7 @@ func (c *external) deleteStaleProviderConfigs(ctx context.Context, gvk schema.Gr
 	}
 	for i := range list.Items {
 		item := &list.Items[i]
-		if _, ok := desired[item.GetName()]; !ok {
+		if !desired[desiredKey{Name: item.GetName(), GVK: meta.GVK}] {
 			if err := c.kube.Delete(ctx, item); err != nil && !kerrors.IsNotFound(err) {
 				return errors.Wrapf(err, "%s %q", errDeleteProviderCfg, item.GetName())
 			}
@@ -350,9 +416,9 @@ func (c *external) deleteStaleProviderConfigs(ctx context.Context, gvk schema.Gr
 }
 
 // deleteAllDownstreamProviderConfigs deletes all ProviderConfigs owned by this CR.
-func (c *external) deleteAllDownstreamProviderConfigs(ctx context.Context, crName string) error {
-	for _, gvk := range providerConfigGVK {
-		if err := c.deleteStaleProviderConfigs(ctx, gvk, crName, nil); err != nil {
+func (c *external) deleteAllDownstreamProviderConfigs(ctx context.Context, crName, namespace string) error {
+	for _, meta := range allProviderConfigMetas() {
+		if err := c.deleteStaleProviderConfigs(ctx, meta, crName, namespace, nil); err != nil {
 			return err
 		}
 	}
@@ -361,15 +427,25 @@ func (c *external) deleteAllDownstreamProviderConfigs(ctx context.Context, crNam
 
 // downstreamProviderConfigsUpToDate checks that all desired downstream ProviderConfigs exist.
 func (c *external) downstreamProviderConfigsUpToDate(ctx context.Context, cr *v1alpha1.RemoteCluster) bool {
+	ns := cr.Spec.ForProvider.SecretNamespace
+	if ns == "" {
+		ns = defaultSecretNamespace
+	}
 	for _, pc := range cr.Spec.ForProvider.ProviderConfigs {
-		gvk, ok := providerConfigGVK[pc.Type]
-		if !ok {
-			return false
-		}
-		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(gvk)
-		if err := c.kube.Get(ctx, types.NamespacedName{Name: pc.Name}, u); err != nil {
-			return false
+		for _, apiVer := range resolveAPIVersions(pc) {
+			meta, err := lookupProviderConfigMeta(pc.Type, apiVer)
+			if err != nil {
+				return false
+			}
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(meta.GVK)
+			key := types.NamespacedName{Name: pc.Name}
+			if meta.Namespaced {
+				key.Namespace = ns
+			}
+			if err := c.kube.Get(ctx, key, u); err != nil {
+				return false
+			}
 		}
 	}
 	return true
@@ -565,7 +641,7 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 
 	// Delete all downstream ProviderConfigs owned by this CR
-	if err := c.deleteAllDownstreamProviderConfigs(ctx, cr.GetName()); err != nil {
+	if err := c.deleteAllDownstreamProviderConfigs(ctx, cr.GetName(), ns); err != nil {
 		return managed.ExternalDelete{}, err
 	}
 

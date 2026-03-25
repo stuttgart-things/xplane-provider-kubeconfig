@@ -19,8 +19,10 @@ spec:
     providerConfigs:
       - name: production-kubernetes
         type: provider-kubernetes
+        apiVersions: ["v1", "v2"]   # creates both cluster-scoped and namespaced ProviderConfigs
       - name: production-helm
         type: provider-helm
+        # apiVersions defaults to ["v1"] when omitted (backwards compatible)
   providerConfigRef:
     name: default
     kind: ClusterProviderConfig
