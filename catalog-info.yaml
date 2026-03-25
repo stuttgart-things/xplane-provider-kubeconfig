@@ -1,0 +1,25 @@
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: provider-kubeconfig
+  description: Crossplane Provider that manages remote Kubernetes kubeconfigs from SOPS-encrypted Git repositories
+  annotations:
+    github.com/project-slug: stuttgart-things/xplane-provider-kubeconfig
+    backstage.io/techdocs-ref: url:https://github.com/stuttgart-things/xplane-provider-kubeconfig/tree/main
+    backstage.io/source-location: url:https://github.com/stuttgart-things/xplane-provider-kubeconfig
+  tags:
+    - crossplane
+    - provider
+    - kubeconfig
+    - sops
+    - golang
+  links:
+    - url: https://github.com/stuttgart-things/xplane-provider-kubeconfig
+      title: GitHub Repository
+      icon: github
+spec:
+  type: service
+  lifecycle: experimental
+  owner: platform-team
+  system: crossplane

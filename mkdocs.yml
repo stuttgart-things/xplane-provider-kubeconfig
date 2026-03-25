@@ -1,0 +1,8 @@
+site_name: provider-kubeconfig
+site_description: Crossplane Provider that manages remote Kubernetes kubeconfigs from SOPS-encrypted Git repositories
+nav:
+  - Home: index.md
+  - Deployment: deployment.md
+  - CI/CD: cicd.md
+plugins:
+  - techdocs-core
