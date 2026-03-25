@@ -91,7 +91,7 @@ EOF
 
 ### 3. Create a RemoteCluster using testdata
 
-The repo includes test kubeconfigs in `examples/testdata/`:
+The repo includes test kubeconfigs in `testdata/`:
 
 | File | Description |
 |------|-------------|
@@ -107,7 +107,7 @@ metadata:
 spec:
   forProvider:
     source:
-      path: examples/testdata/kubeconfig.yaml
+      path: testdata/kubeconfig.yaml
     secretNamespace: crossplane-system
   providerConfigRef:
     name: default

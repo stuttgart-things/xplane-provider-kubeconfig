@@ -6,7 +6,7 @@ metadata:
 spec:
   forProvider:
     source:
-      path: examples/testdata/kubeconfig.enc.yaml
+      path: testdata/kubeconfig.enc.yaml
     secretNamespace: crossplane-system
   providerConfigRef:
     name: default
