@@ -9,7 +9,7 @@ on:
 
 jobs:
   release:
-    name: Build & Push to GHCR
+    name: Build, Push Image & xpkg to GHCR
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
@@ -30,7 +30,9 @@ jobs:
         run: |
           echo "commit=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build & push to ghcr.io (commit tag)
+      # --- Container image ---
+
+      - name: Build & push image to ghcr.io (commit tag)
         uses: dagger/dagger-for-github@v6
         with:
           version: "0.20.0"
@@ -50,7 +52,7 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
 
-      - name: Build & push to ghcr.io (latest tag)
+      - name: Build & push image to ghcr.io (latest tag)
         uses: dagger/dagger-for-github@v6
         with:
           version: "0.20.0"
@@ -69,3 +71,32 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
           DAGGER_CLOUD_TOKEN: ${{ secrets.DAGGER_CLOUD_TOKEN }}
+
+      # --- Crossplane xpkg ---
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Install Crossplane CLI
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh" | sh
+          sudo mv crossplane /usr/local/bin/
+
+      - name: Build xpkg
+        run: |
+          crossplane xpkg build \
+            --package-root=package \
+            --embed-runtime-image=ghcr.io/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.commit }} \
+            -o provider-kubeconfig.xpkg
+
+      - name: Push xpkg (commit tag)
+        run: |
+          crossplane xpkg push \
+            "ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:${{ steps.meta.outputs.commit }}" \
+            -f provider-kubeconfig.xpkg
+
+      - name: Push xpkg (latest tag)
+        run: |
+          crossplane xpkg push \
+            "ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:latest" \
+            -f provider-kubeconfig.xpkg
