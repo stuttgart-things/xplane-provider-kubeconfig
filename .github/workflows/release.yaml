@@ -107,6 +107,7 @@ jobs:
         run: |
           crossplane xpkg build \
             --package-root=package \
+            --ignore=examples/testdata \
             --embed-runtime-image=ghcr.io/stuttgart-things/provider-kubeconfig:${{ steps.meta.outputs.version }} \
             -o provider-kubeconfig.xpkg
 
