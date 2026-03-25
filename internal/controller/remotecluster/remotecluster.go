@@ -338,6 +338,29 @@ type desiredKey struct {
 	GVK  schema.GroupVersionKind
 }
 
+// ensureOneProviderConfig creates a single downstream ProviderConfig if it doesn't exist.
+func (c *external) ensureOneProviderConfig(ctx context.Context, meta providerConfigMeta, pcName, sName, sNamespace, crName, apiVer string) error {
+	u, err := buildDownstreamProviderConfig(meta, pcName, sName, sNamespace, crName)
+	if err != nil {
+		return err
+	}
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(meta.GVK)
+	key := types.NamespacedName{Name: pcName}
+	if meta.Namespaced {
+		key.Namespace = sNamespace
+	}
+	err = c.kube.Get(ctx, key, existing)
+	if kerrors.IsNotFound(err) {
+		if err := c.kube.Create(ctx, u); err != nil {
+			return errors.Wrapf(err, "%s %q (apiVersion %s)", errCreateProviderCfg, pcName, apiVer)
+		}
+		return nil
+	}
+	return errors.Wrapf(err, "cannot check downstream ProviderConfig %q", pcName)
+}
+
 // ensureDownstreamProviderConfigs creates any missing downstream ProviderConfigs
 // and deletes stale ones that are no longer in the spec.
 func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1alpha1.RemoteCluster, sName, sNamespace string) error {
@@ -349,29 +372,10 @@ func (c *external) ensureDownstreamProviderConfigs(ctx context.Context, cr *v1al
 			if err != nil {
 				return err
 			}
-
 			desired[desiredKey{Name: pc.Name, GVK: meta.GVK}] = true
 
-			u, err := buildDownstreamProviderConfig(meta, pc.Name, sName, sNamespace, cr.GetName())
-			if err != nil {
+			if err := c.ensureOneProviderConfig(ctx, meta, pc.Name, sName, sNamespace, cr.GetName(), apiVer); err != nil {
 				return err
-			}
-
-			existing := &unstructured.Unstructured{}
-			existing.SetGroupVersionKind(meta.GVK)
-			key := types.NamespacedName{Name: pc.Name}
-			if meta.Namespaced {
-				key.Namespace = sNamespace
-			}
-			err = c.kube.Get(ctx, key, existing)
-			if kerrors.IsNotFound(err) {
-				if err := c.kube.Create(ctx, u); err != nil {
-					return errors.Wrapf(err, "%s %q (apiVersion %s)", errCreateProviderCfg, pc.Name, apiVer)
-				}
-				continue
-			}
-			if err != nil {
-				return errors.Wrapf(err, "cannot check downstream ProviderConfig %q", pc.Name)
 			}
 		}
 	}

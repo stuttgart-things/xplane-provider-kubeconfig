@@ -203,9 +203,9 @@ func TestLookupProviderConfigMeta(t *testing.T) {
 		apiVer       string
 		wantErr      bool
 	}{
-		"ValidV1":          {providerType: "provider-kubernetes", apiVer: "v1"},
-		"ValidV2":          {providerType: "provider-helm", apiVer: "v2"},
-		"UnsupportedType":  {providerType: "provider-unknown", apiVer: "v1", wantErr: true},
+		"ValidV1":           {providerType: "provider-kubernetes", apiVer: "v1"},
+		"ValidV2":           {providerType: "provider-helm", apiVer: "v2"},
+		"UnsupportedType":   {providerType: "provider-unknown", apiVer: "v1", wantErr: true},
 		"UnsupportedAPIVer": {providerType: "provider-kubernetes", apiVer: "v3", wantErr: true},
 	}
 
