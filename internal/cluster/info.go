@@ -18,8 +18,11 @@ package cluster
 
 import (
 	"context"
+	"net"
+	"strings"
 
 	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -27,12 +30,13 @@ import (
 
 // Info holds observed cluster metadata.
 type Info struct {
-	ServerVersion string
-	APIEndpoint   string
-	PodCIDR       string
-	ServiceCIDR   string
-	NodeCIDRs     []string
-	NodeCount     int
+	ServerVersion      string
+	APIEndpoint        string
+	PodCIDR            string
+	ServiceCIDR        string
+	NodeCIDRs          []string
+	NodeCount          int
+	InternalNetworkKey string
 }
 
 // Gather connects to the remote cluster using the provided kubeconfig bytes
@@ -86,7 +90,37 @@ func gatherNodeInfo(ctx context.Context, cs kubernetes.Interface, info *Info) er
 	if len(nodes.Items) > 0 && nodes.Items[0].Spec.PodCIDR != "" {
 		info.PodCIDR = nodes.Items[0].Spec.PodCIDR
 	}
+
+	if key := internalNetworkKey(nodes.Items); key != "" {
+		info.InternalNetworkKey = key
+	}
+
 	return nil
+}
+
+// internalNetworkKey returns the first 3 octets of the first node's InternalIP
+// (e.g. "10.31.102" or "172.18.0"), which serves as a network key for
+// clusterbook IP reservations.
+func internalNetworkKey(nodes []corev1.Node) string {
+	for _, node := range nodes {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP {
+				ip := net.ParseIP(addr.Address)
+				if ip == nil {
+					continue
+				}
+				ip = ip.To4()
+				if ip == nil {
+					continue
+				}
+				parts := strings.SplitN(addr.Address, ".", 4)
+				if len(parts) >= 3 {
+					return strings.Join(parts[:3], ".")
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func gatherServiceCIDR(ctx context.Context, cs kubernetes.Interface, info *Info) {

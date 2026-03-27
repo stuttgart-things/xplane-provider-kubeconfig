@@ -683,6 +683,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		obs.ServiceCIDR = info.ServiceCIDR
 		obs.NodeCIDRs = info.NodeCIDRs
 		obs.NodeCount = info.NodeCount
+		obs.InternalNetworkKey = info.InternalNetworkKey
 	}
 
 	cr.Status.AtProvider = obs

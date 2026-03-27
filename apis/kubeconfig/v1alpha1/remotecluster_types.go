@@ -81,6 +81,9 @@ type RemoteClusterObservation struct {
 	NodeCIDRs []string `json:"nodeCIDRs,omitempty"`
 	// NodeCount is the number of nodes in the remote cluster.
 	NodeCount int `json:"nodeCount,omitempty"`
+	// InternalNetworkKey is the first 3 octets of the node InternalIP network
+	// (e.g. "10.31.102" or "172.18.0"), used as network key for IP reservations.
+	InternalNetworkKey string `json:"internalNetworkKey,omitempty"`
 	// SecretRef is the name of the Secret containing the decrypted kubeconfig.
 	SecretRef string `json:"secretRef,omitempty"`
 }
@@ -104,6 +107,7 @@ type RemoteClusterStatus struct {
 // +kubebuilder:printcolumn:name="SYNCED",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status"
 // +kubebuilder:printcolumn:name="CLUSTER",type="string",JSONPath=".status.atProvider.clusterName"
 // +kubebuilder:printcolumn:name="VERSION",type="string",JSONPath=".status.atProvider.serverVersion"
+// +kubebuilder:printcolumn:name="NETWORK",type="string",JSONPath=".status.atProvider.internalNetworkKey",priority=1
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:scope=Cluster,categories={crossplane,managed,kubeconfig}
 // A RemoteCluster reads a SOPS-encrypted kubeconfig from Git, decrypts it,
