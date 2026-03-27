@@ -38,20 +38,24 @@ spec:
 EOF
 ```
 
-**For development (out-of-cluster):**
+**Running the released image (out-of-cluster):**
 
 ```shell
-# Install CRDs
-kubectl apply -R -f package/crds
+export KUBECONFIG=~/.kube/dev
+export VERSION=v0.8.0
 
-# Run the provider locally
-go run cmd/provider/main.go --debug
-```
+# Install CRDs from the release tag
+for crd in clusterproviderconfigs clusterproviderconfigusages providerconfigs providerconfigusages remoteclusters; do
+  kubectl apply -f \
+    "https://raw.githubusercontent.com/stuttgart-things/xplane-provider-kubeconfig/${VERSION}/package/crds/kubeconfig.stuttgart-things.com_${crd}.yaml"
+done
 
-Or with a kind cluster:
-
-```shell
-make dev
+# Run the provider using the released image
+docker run --rm --network host \
+  -v "${KUBECONFIG}:/kubeconfig:ro" \
+  -e KUBECONFIG=/kubeconfig \
+  ghcr.io/stuttgart-things/provider-kubeconfig:${VERSION} \
+  --debug
 ```
 
 ### 2. Create the Secrets
