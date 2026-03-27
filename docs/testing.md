@@ -5,10 +5,43 @@
 ### 1. Create a Kind cluster
 
 ```bash
-kind create cluster --name dev
+cat <<'EOF' > /tmp/crossplane-test.yaml
+kind: Cluster
+name: crossplane-test
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  ImageVolume: True
+networking:
+  apiServerAddress: '10.100.136.192'
+  disableDefaultCNI: True
+  kubeProxyMode: none
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.35.0
+    extraPortMappings:
+      - containerPort: 6443
+        hostPort: 34360
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.35.0
+EOF
+
+kind create cluster --config /tmp/crossplane-test.yaml
+kind get kubeconfig --name crossplane-test > ~/.kube/dev
+yq -i '.clusters[0].cluster.server |= sub("0\.0\.0\.0", "10.100.136.192")' ~/.kube/dev
 ```
 
-### 2. Install Cilium
+### 2. Encrypt kubeconfig with SOPS/age
+
+```bash
+# Get the age public key from the secret key
+AGE_PUB=$(echo "AGE-SECRET-KEY-..." | age-keygen -y)
+
+# Encrypt the kubeconfig
+sops encrypt --age $AGE_PUB ~/.kube/dev > testdata/xplane-test.enc.yaml
+```
+
+### 3. Install Cilium (Crossplane will handle this via XCilium)
 
 ```bash
 kubectl apply -k https://github.com/stuttgart-things/helm/infra/crds/cilium
