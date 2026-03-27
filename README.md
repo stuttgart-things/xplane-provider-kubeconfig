@@ -11,7 +11,7 @@ and downstream ProviderConfigs for the remote clusters.
 - **SOPS/age decryption** — decrypts kubeconfigs encrypted with [SOPS](https://github.com/getsops/sops) using [age](https://age-encryption.org/) keys
 - **Drift detection** — compares SHA-256 content hashes on every poll; automatically updates the Secret when the Git file changes
 - **Downstream ProviderConfigs** — automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig resources referencing the kubeconfig Secret
-- **Remote cluster status** — gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs) and exposes it in `status.atProvider`
+- **Remote cluster status** — gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs, internal network key) and exposes it in `status.atProvider`
 
 ## Custom Resource Types
 
@@ -134,6 +134,11 @@ This will:
 $ kubectl get remotecluster
 NAME                READY   SYNCED   CLUSTER              VERSION   AGE
 my-remote-cluster   True    True     my-remote-cluster    v1.31.4   5m
+
+# With wide output to see the NETWORK column
+$ kubectl get remotecluster -o wide
+NAME                READY   SYNCED   CLUSTER              VERSION   NETWORK      AGE
+my-remote-cluster   True    True     my-remote-cluster    v1.31.4   10.31.102    5m
 ```
 
 ## Encrypting a Kubeconfig with SOPS/age

@@ -8,7 +8,7 @@ Crossplane Provider that manages remote Kubernetes cluster kubeconfigs. It reads
 - **SOPS/age decryption** -- optionally decrypts kubeconfigs encrypted with SOPS using age keys; plain kubeconfigs are supported without decryption
 - **Drift detection** -- compares SHA-256 content hashes on every poll; automatically updates the Secret when the Git file changes
 - **Downstream ProviderConfigs** -- automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig resources referencing the kubeconfig Secret
-- **Remote cluster status** -- gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs)
+- **Remote cluster status** -- gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs, internal network key)
 
 ## How It Works
 
@@ -18,7 +18,7 @@ When you create a `RemoteCluster` resource, the provider performs these 5 steps:
 2. **Decrypt** the kubeconfig using the SOPS/age key from the referenced Secret (skipped for unencrypted files)
 3. **Create a Kubernetes Secret** named `kubeconfig-<remotecluster-name>` containing the decrypted kubeconfig
 4. **Create downstream ProviderConfigs** (optional) for `provider-kubernetes` and/or `provider-helm` that reference the kubeconfig Secret
-5. **Populate status** with remote cluster metadata (Kubernetes version, API endpoint, node count, CIDRs)
+5. **Populate status** with remote cluster metadata (Kubernetes version, API endpoint, node count, CIDRs, internal network key)
 
 On every poll interval (default 1m), the provider re-reads the Git file, compares the content hash, and updates the Secret if the kubeconfig has changed.
 
@@ -112,6 +112,11 @@ spec:
 $ kubectl get remotecluster
 NAME                READY   SYNCED   CLUSTER              VERSION   AGE
 my-remote-cluster   True    True     my-remote-cluster    v1.31.4   5m
+
+# With wide output to see the NETWORK column (internalNetworkKey)
+$ kubectl get remotecluster -o wide
+NAME                READY   SYNCED   CLUSTER              VERSION   NETWORK      AGE
+my-remote-cluster   True    True     my-remote-cluster    v1.31.4   10.31.102    5m
 
 $ kubectl get secret kubeconfig-my-remote-cluster -n crossplane-system
 NAME                             TYPE     DATA   AGE
