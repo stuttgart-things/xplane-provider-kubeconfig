@@ -84,7 +84,12 @@ func (r *Repo) EnsureCloned(ctx context.Context) (string, error) {
 	refName := plumbing.NewBranchReferenceName(r.branch)
 
 	if _, err := os.Stat(filepath.Join(r.cacheDir, ".git")); err == nil {
-		return r.pull(ctx, refName)
+		dir, pullErr := r.pull(ctx, refName)
+		if pullErr == nil {
+			return dir, nil
+		}
+		// Pull failed (e.g. stale shallow clone) — remove cache and re-clone
+		_ = os.RemoveAll(r.cacheDir)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(r.cacheDir), 0750); err != nil {
@@ -111,8 +116,6 @@ func (r *Repo) EnsureCloned(ctx context.Context) (string, error) {
 func (r *Repo) pull(ctx context.Context, refName plumbing.ReferenceName) (string, error) {
 	repo, err := git.PlainOpen(r.cacheDir)
 	if err != nil {
-		// Cache is corrupted, remove and re-clone
-		_ = os.RemoveAll(r.cacheDir)
 		return "", errors.Wrap(err, "cannot open cached git repository")
 	}
 
