@@ -23,10 +23,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// RemoteClusterSource defines where to find the encrypted kubeconfig in the Git repo.
+// RemoteClusterSource defines where to find the kubeconfig.
 type RemoteClusterSource struct {
-	// Path to the SOPS-encrypted kubeconfig file in the Git repository.
+	// Type selects the kubeconfig source. Defaults to "git".
+	// +kubebuilder:default=git
+	// +kubebuilder:validation:Enum=git;vault
+	Type string `json:"type,omitempty"`
+	// Path is the file path in Git, or the Vault KVv2 secret path.
 	Path string `json:"path"`
+	// Key is the key within the Vault KVv2 secret data that holds the kubeconfig.
+	// Only used when type is "vault". Defaults to "kubeconfig".
+	// +kubebuilder:default=kubeconfig
+	// +optional
+	Key string `json:"key,omitempty"`
 }
 
 // ProviderConfigRef defines a downstream ProviderConfig to create.
@@ -86,6 +95,9 @@ type RemoteClusterObservation struct {
 	InternalNetworkKey string `json:"internalNetworkKey,omitempty"`
 	// ClusterType is the detected Kubernetes distribution (kind, k3s, rke2, k8s).
 	ClusterType string `json:"clusterType,omitempty"`
+	// VaultSecretVersion is the KVv2 metadata version, used for drift detection.
+	// +optional
+	VaultSecretVersion int `json:"vaultSecretVersion,omitempty"`
 	// SecretRef is the name of the Secret containing the decrypted kubeconfig.
 	SecretRef string `json:"secretRef,omitempty"`
 }

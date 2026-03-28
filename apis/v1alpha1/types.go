@@ -33,12 +33,64 @@ type DecryptionConfig struct {
 	SecretRef SecretRef `json:"secretRef"`
 }
 
+// VaultKubernetesAuth holds Kubernetes auth method settings.
+type VaultKubernetesAuth struct {
+	// Role is the Vault role for Kubernetes auth.
+	Role string `json:"role"`
+	// MountPath is the Vault auth mount path.
+	// +kubebuilder:default=kubernetes
+	MountPath string `json:"mountPath,omitempty"`
+}
+
+// VaultAppRoleAuth holds AppRole auth method settings.
+type VaultAppRoleAuth struct {
+	// MountPath is the Vault auth mount path.
+	// +kubebuilder:default=approle
+	MountPath string `json:"mountPath,omitempty"`
+	// RoleID is the AppRole role ID.
+	RoleID string `json:"roleId"`
+	// SecretRef references a Secret containing a "secret-id" key.
+	SecretRef SecretRef `json:"secretRef"`
+}
+
+// VaultAuthConfig holds authentication configuration for Vault.
+type VaultAuthConfig struct {
+	// Method is the authentication method.
+	// +kubebuilder:validation:Enum=kubernetes;approle
+	Method string `json:"method"`
+	// Kubernetes holds Kubernetes auth config.
+	// +optional
+	Kubernetes *VaultKubernetesAuth `json:"kubernetes,omitempty"`
+	// AppRole holds AppRole auth config.
+	// +optional
+	AppRole *VaultAppRoleAuth `json:"appRole,omitempty"`
+}
+
+// VaultConfig holds Vault connection and auth settings.
+type VaultConfig struct {
+	// Address is the Vault server address (e.g. https://vault.example.com).
+	Address string `json:"address"`
+	// Namespace is the Vault namespace (enterprise feature).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+	// MountPath is the KVv2 secrets engine mount path.
+	// +kubebuilder:default=secret
+	MountPath string `json:"mountPath,omitempty"`
+	// Auth holds the authentication configuration.
+	Auth VaultAuthConfig `json:"auth"`
+}
+
 // ProviderConfigSpec defines the desired state of a ProviderConfig.
 type ProviderConfigSpec struct {
-	// Git holds the Git repository configuration.
-	Git GitConfig `json:"git"`
-	// Decryption holds the SOPS/age decryption configuration.
-	Decryption DecryptionConfig `json:"decryption"`
+	// Git holds the Git repository configuration. Required when source is git.
+	// +optional
+	Git *GitConfig `json:"git,omitempty"`
+	// Decryption holds the SOPS/age decryption configuration. Required when source is git.
+	// +optional
+	Decryption *DecryptionConfig `json:"decryption,omitempty"`
+	// Vault holds Vault KVv2 connection configuration. Required when source is vault.
+	// +optional
+	Vault *VaultConfig `json:"vault,omitempty"`
 }
 
 // A ProviderConfigStatus defines the status of a ProviderConfig.
