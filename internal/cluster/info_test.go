@@ -99,6 +99,16 @@ func TestDetectClusterType(t *testing.T) {
 			},
 			want: "kind",
 		},
+		"KindWithProviderID": {
+			serverVersion: "v1.35.0",
+			nodes: []corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "dev-control-plane"},
+					Spec:       corev1.NodeSpec{ProviderID: "kind://docker/dev/dev-control-plane"},
+				},
+			},
+			want: "kind",
+		},
 		"CloudNodeNotKind": {
 			serverVersion: "v1.35.0",
 			nodes: []corev1.Node{

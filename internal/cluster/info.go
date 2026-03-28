@@ -143,9 +143,8 @@ func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.
 		for _, node := range nodes.Items {
 			// kind nodes have names like "{cluster}-control-plane" or "{cluster}-worker"
 			if strings.HasSuffix(node.Name, "-control-plane") || strings.HasSuffix(node.Name, "-worker") {
-				// Verify by checking the container runtime — kind uses containerd
-				// and the providerID is empty (no cloud provider)
-				if node.Spec.ProviderID == "" {
+				// kind sets providerID to "kind://..." or leaves it empty
+				if node.Spec.ProviderID == "" || strings.HasPrefix(node.Spec.ProviderID, "kind://") {
 					return "kind"
 				}
 			}
