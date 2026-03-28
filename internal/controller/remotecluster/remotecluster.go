@@ -184,6 +184,8 @@ type connector struct {
 }
 
 func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.ExternalClient, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	cr, ok := mg.(*v1alpha1.RemoteCluster)
 	if !ok {
 		return nil, errors.New(errNotRemoteCluster)
@@ -195,17 +197,27 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 
 	spec, err := c.resolveProviderConfigSpec(ctx, cr)
 	if err != nil {
+		log.Info("Failed to resolve ProviderConfig", "error", err)
 		return nil, err
 	}
+	log.V(1).Info("Resolved ProviderConfig", "gitURL", spec.Git.URL, "branch", spec.Git.Branch)
 
 	gitToken, err := c.resolveGitToken(ctx, spec)
 	if err != nil {
+		log.Info("Failed to resolve Git token", "secretRef", spec.Git.SecretRef, "error", err)
 		return nil, err
+	}
+	if gitToken != "" {
+		log.V(1).Info("Git token resolved", "secretRef", spec.Git.SecretRef.Name)
 	}
 
 	ageKey, err := c.resolveAgeKey(ctx, spec)
 	if err != nil {
+		log.Info("Failed to resolve decryption key", "secretRef", spec.Decryption.SecretRef.Name, "error", err)
 		return nil, err
+	}
+	if ageKey == "" {
+		log.Info("Decryption key is empty — kubeconfig will not be decrypted", "secretRef", spec.Decryption.SecretRef.Name)
 	}
 
 	return &external{kube: c.kube, providerSpec: *spec, gitToken: gitToken, ageKey: ageKey}, nil
@@ -281,14 +293,19 @@ func contentHash(data []byte) string {
 // cloneAndReadFile clones/pulls the Git repo, reads the file at source.path,
 // and decrypts it if an age key is configured.
 func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byte, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	repo := gitpkg.NewRepo(c.providerSpec.Git.URL, c.providerSpec.Git.Branch, c.gitToken)
 
 	if _, err := repo.EnsureCloned(ctx); err != nil {
+		log.Info("Git clone/pull failed", "url", c.providerSpec.Git.URL, "branch", c.providerSpec.Git.Branch, "error", err)
 		return nil, errors.Wrap(err, errCloneRepo)
 	}
+	log.V(1).Info("Git repo ready", "url", c.providerSpec.Git.URL, "branch", c.providerSpec.Git.Branch)
 
 	content, err := repo.ReadFile(filePath)
 	if err != nil {
+		log.Info("Failed to read file from git repo", "path", filePath, "error", err)
 		return nil, errors.Wrap(err, errReadFile)
 	}
 
@@ -296,8 +313,10 @@ func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byt
 	if c.ageKey != "" {
 		decrypted, err := decryptpkg.SOPSDecrypt(content, filePath, c.ageKey)
 		if err != nil {
+			log.Info("SOPS decryption failed", "path", filePath, "error", err)
 			return nil, errors.Wrap(err, errDecryptFile)
 		}
+		log.V(1).Info("Decrypted kubeconfig", "path", filePath)
 		return decrypted, nil
 	}
 
@@ -632,6 +651,8 @@ func (c *external) downstreamProviderConfigsUpToDate(ctx context.Context, cr *v1
 }
 
 func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	cr, ok := mg.(*v1alpha1.RemoteCluster)
 	if !ok {
 		return managed.ExternalObservation{}, errors.New(errNotRemoteCluster)
@@ -646,6 +667,7 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	secret := &corev1.Secret{}
 	err := c.kube.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, secret)
 	if kerrors.IsNotFound(err) {
+		log.V(1).Info("Kubeconfig secret not found, will create", "secret", name, "namespace", ns)
 		return managed.ExternalObservation{ResourceExists: false}, nil
 	}
 	if err != nil {
@@ -656,16 +678,19 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	upToDate := true
 	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
 	if err != nil {
+		log.Info("Failed to clone/read git file during observe", "path", cr.Spec.ForProvider.Source.Path, "error", err)
 		return managed.ExternalObservation{}, err
 	}
 	currentHash := contentHash(content)
 	storedHash := secret.GetAnnotations()[annotationContentHash]
 	if currentHash != storedHash {
+		log.Info("Content drift detected", "cluster", cr.GetName(), "storedHash", storedHash, "currentHash", currentHash)
 		upToDate = false
 	}
 
 	// Check that all downstream ProviderConfigs exist
 	if upToDate && !c.downstreamProviderConfigsUpToDate(ctx, cr) {
+		log.Info("Downstream ProviderConfigs out of date", "cluster", cr.GetName())
 		upToDate = false
 	}
 
@@ -685,6 +710,9 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		obs.NodeCount = info.NodeCount
 		obs.InternalNetworkKey = info.InternalNetworkKey
 		obs.ClusterType = info.ClusterType
+		log.V(1).Info("Gathered cluster info", "cluster", cr.GetName(), "version", info.ServerVersion, "type", info.ClusterType, "nodes", info.NodeCount)
+	} else {
+		log.V(1).Info("Could not gather cluster info (target may be unreachable)", "cluster", cr.GetName(), "error", err)
 	}
 
 	cr.Status.AtProvider = obs
@@ -699,6 +727,8 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 }
 
 func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.ExternalCreation, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	cr, ok := mg.(*v1alpha1.RemoteCluster)
 	if !ok {
 		return managed.ExternalCreation{}, errors.New(errNotRemoteCluster)
@@ -711,8 +741,10 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	name := secretName(cr.GetName())
 
 	// Clone/pull Git repo and read the kubeconfig file
+	log.Info("Creating kubeconfig secret", "cluster", cr.GetName(), "path", cr.Spec.ForProvider.Source.Path, "secret", name)
 	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
 	if err != nil {
+		log.Info("Failed to clone/read git file", "path", cr.Spec.ForProvider.Source.Path, "error", err)
 		return managed.ExternalCreation{}, err
 	}
 
@@ -736,11 +768,14 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	if err := c.kube.Create(ctx, secret); err != nil {
 		return managed.ExternalCreation{}, errors.Wrap(err, errCreateSecret)
 	}
+	log.Info("Created kubeconfig secret", "cluster", cr.GetName(), "secret", name, "namespace", ns)
 
 	// Create downstream ProviderConfigs and ArgoCD secrets
 	if err := c.ensureDownstreamProviderConfigs(ctx, cr, name, ns, content); err != nil {
+		log.Info("Failed to create downstream ProviderConfigs", "cluster", cr.GetName(), "error", err)
 		return managed.ExternalCreation{}, err
 	}
+	log.Info("Created downstream ProviderConfigs", "cluster", cr.GetName(), "count", len(cr.Spec.ForProvider.ProviderConfigs))
 
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
 		ClusterName: cr.GetName(),
@@ -801,6 +836,8 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 }
 
 func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.ExternalDelete, error) {
+	log := ctrl.LoggerFrom(ctx)
+
 	cr, ok := mg.(*v1alpha1.RemoteCluster)
 	if !ok {
 		return managed.ExternalDelete{}, errors.New(errNotRemoteCluster)
@@ -811,6 +848,8 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 		ns = defaultSecretNamespace
 	}
 	name := secretName(cr.GetName())
+
+	log.Info("Deleting RemoteCluster resources", "cluster", cr.GetName(), "secret", name)
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -824,8 +863,10 @@ func (c *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 
 	// Delete all downstream ProviderConfigs owned by this CR
 	if err := c.deleteAllDownstreamProviderConfigs(ctx, cr.GetName(), ns); err != nil {
+		log.Info("Failed to delete downstream ProviderConfigs", "cluster", cr.GetName(), "error", err)
 		return managed.ExternalDelete{}, err
 	}
+	log.Info("Deleted RemoteCluster resources", "cluster", cr.GetName())
 
 	return managed.ExternalDelete{}, nil
 }
