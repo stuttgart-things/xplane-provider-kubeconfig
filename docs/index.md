@@ -1,42 +1,65 @@
 # provider-kubeconfig
 
-Crossplane Provider that manages remote Kubernetes cluster kubeconfigs. It reads SOPS-encrypted kubeconfig files from a Git repository, decrypts them, and bootstraps Secrets and downstream ProviderConfigs for the remote clusters.
+Crossplane Provider that manages remote Kubernetes cluster kubeconfigs. It reads kubeconfig files from **Git repositories** (SOPS-encrypted) or **HashiCorp Vault** (KVv2), and bootstraps Secrets and downstream ProviderConfigs for the remote clusters.
 
 ## Features
 
+- **Dual source support** -- read kubeconfigs from Git+SOPS or Vault KVv2
 - **Git-based kubeconfig management** -- clones/pulls a Git repo and reads kubeconfig files (encrypted or plain)
-- **SOPS/age decryption** -- optionally decrypts kubeconfigs encrypted with SOPS using age keys; plain kubeconfigs are supported without decryption
-- **Drift detection** -- compares SHA-256 content hashes on every poll; automatically updates the Secret when the Git file changes
-- **Downstream ProviderConfigs** -- automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig resources referencing the kubeconfig Secret
-- **Remote cluster status** -- gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs, internal network key)
+- **SOPS/age decryption** -- optionally decrypts kubeconfigs encrypted with SOPS using age keys
+- **Vault KVv2 integration** -- reads kubeconfigs from Vault with Kubernetes auth or AppRole auth
+- **Drift detection** -- content hash comparison for Git, KVv2 version tracking for Vault
+- **Downstream ProviderConfigs** -- automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig/ClusterProviderConfig resources
+- **ArgoCD cluster secrets** -- optionally creates ArgoCD-compatible cluster secrets
+- **Cluster type detection** -- auto-detects Kubernetes distribution (`kind`, `k3s`, `rke2`, `k8s`)
+- **Remote cluster status** -- gathers metadata (version, type, API endpoint, node count, CIDRs, internal network key)
+- **RBAC self-bootstrap** -- automatically manages its own ClusterRole/ClusterRoleBinding on startup
 
 ## How It Works
 
-When you create a `RemoteCluster` resource, the provider performs these 5 steps:
+When you create a `RemoteCluster` resource, the provider performs these steps:
 
-1. **Clone the Git repo** referenced in the `ClusterProviderConfig` and read the kubeconfig file at the specified path
-2. **Decrypt** the kubeconfig using the SOPS/age key from the referenced Secret (skipped for unencrypted files)
-3. **Create a Kubernetes Secret** named `kubeconfig-<remotecluster-name>` containing the decrypted kubeconfig
-4. **Create downstream ProviderConfigs** (optional) for `provider-kubernetes` and/or `provider-helm` that reference the kubeconfig Secret
-5. **Populate status** with remote cluster metadata (Kubernetes version, API endpoint, node count, CIDRs, internal network key)
+1. **Read the kubeconfig** from the configured source (Git repo or Vault KVv2)
+2. **Decrypt** (Git+SOPS only) the kubeconfig using the age key from the referenced Secret
+3. **Create a Kubernetes Secret** named `kubeconfig-<remotecluster-name>` containing the kubeconfig
+4. **Create downstream ProviderConfigs** (optional) for `provider-kubernetes` and/or `provider-helm`
+5. **Populate status** with remote cluster metadata (version, type, API endpoint, CIDRs, etc.)
 
-On every poll interval (default 1m), the provider re-reads the Git file, compares the content hash, and updates the Secret if the kubeconfig has changed.
+On every poll interval (default 1m), the provider checks for changes and updates the Secret automatically.
+
+### Git Source Flow
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐
 │  Git Repo    │────>│  Provider    │────>│  kubeconfig Secret   │
 │  (encrypted) │     │  (decrypt)   │     └──────────────────────┘
 └──────────────┘     │              │     ┌──────────────────────┐
-                     │              │────>│  ProviderConfig      │
+                     │              │────>│  ClusterProviderCfg  │
 ┌──────────────┐     │              │     │  (provider-k8s)      │
 │  age-key     │────>│              │     └──────────────────────┘
 │  Secret      │     │              │     ┌──────────────────────┐
-└──────────────┘     │              │────>│  ProviderConfig      │
+└──────────────┘     │              │────>│  ClusterProviderCfg  │
                      │              │     │  (provider-helm)     │
                      └──────────────┘     └──────────────────────┘
 ```
 
-## Quick Start
+### Vault Source Flow
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────────────┐
+│  Vault KVv2  │────>│  Provider    │────>│  kubeconfig Secret   │
+│  (plaintext) │     │  (k8s auth)  │     └──────────────────────┘
+└──────────────┘     │              │     ┌──────────────────────┐
+                     │              │────>│  ClusterProviderCfg  │
+                     │              │     │  (provider-k8s)      │
+                     │              │     └──────────────────────┘
+                     │              │     ┌──────────────────────┐
+                     │              │────>│  ClusterProviderCfg  │
+                     │              │     │  (provider-helm)     │
+                     └──────────────┘     └──────────────────────┘
+```
+
+## Quick Start: Git Source
 
 ### Step 1: Install the Provider
 
@@ -46,12 +69,12 @@ kind: Provider
 metadata:
   name: provider-kubeconfig
 spec:
-  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:v0.2.1  # or :latest
+  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:v0.11.0
 ```
 
 ### Step 2: Create the age decryption key Secret
 
-> **Note:** The decryption Secret must exist even when using unencrypted kubeconfigs. For plain kubeconfigs, create the Secret with an empty key -- the provider will skip decryption automatically.
+The key field must be named `key`:
 
 ```yaml
 apiVersion: v1
@@ -84,13 +107,25 @@ spec:
       namespace: crossplane-system
 ```
 
+For private repos, create a token Secret (field must be named `token`):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-credentials
+  namespace: crossplane-system
+stringData:
+  token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
 ### Step 4: Create a RemoteCluster
 
 ```yaml
 apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: RemoteCluster
 metadata:
-  name: my-remote-cluster
+  name: my-cluster
 spec:
   forProvider:
     source:
@@ -99,51 +134,170 @@ spec:
     providerConfigs:
       - name: my-cluster-kubernetes
         type: provider-kubernetes
+        apiVersions: [v2-cluster]
       - name: my-cluster-helm
         type: provider-helm
+        apiVersions: [v2-cluster]
   providerConfigRef:
     name: default
     kind: ClusterProviderConfig
 ```
 
-### Step 5: Verify
+## Quick Start: Vault Source
+
+### Step 1: Store kubeconfig in Vault
+
+```shell
+vault kv put secret/clusters/my-cluster kubeconfig=@kubeconfig.yaml
+```
+
+### Step 2: Create a ClusterProviderConfig
+
+**Kubernetes auth** (recommended -- zero credentials to manage):
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: vault-k8s
+spec:
+  vault:
+    address: https://vault.example.com
+    auth:
+      method: kubernetes
+      kubernetes:
+        role: provider-kubeconfig
+```
+
+**AppRole auth** (for non-Kubernetes environments):
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: vault-approle
+spec:
+  vault:
+    address: https://vault.example.com
+    auth:
+      method: approle
+      appRole:
+        roleId: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        secretRef:
+          name: vault-approle-secret
+          namespace: crossplane-system
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-approle-secret
+  namespace: crossplane-system
+stringData:
+  secret-id: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+### Step 3: Create a RemoteCluster
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: RemoteCluster
+metadata:
+  name: my-cluster
+spec:
+  forProvider:
+    source:
+      type: vault
+      path: clusters/my-cluster
+      key: kubeconfig               # key within the KVv2 secret (default: kubeconfig)
+    secretNamespace: crossplane-system
+    providerConfigs:
+      - name: my-cluster-kubernetes
+        type: provider-kubernetes
+        apiVersions: [v2-cluster]
+      - name: my-cluster-helm
+        type: provider-helm
+        apiVersions: [v2-cluster]
+  providerConfigRef:
+    name: vault-k8s
+    kind: ClusterProviderConfig
+```
+
+### Vault Configuration Options
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `vault.address` | | Vault server URL (required) |
+| `vault.namespace` | | Vault enterprise namespace (optional) |
+| `vault.mountPath` | `secret` | KVv2 secrets engine mount path |
+| `vault.auth.method` | | `kubernetes` or `approle` (required) |
+| `vault.auth.kubernetes.role` | | Vault role for Kubernetes auth |
+| `vault.auth.kubernetes.mountPath` | `kubernetes` | Vault auth mount path |
+| `vault.auth.appRole.roleId` | | AppRole role ID |
+| `vault.auth.appRole.mountPath` | `approle` | Vault auth mount path |
+| `vault.auth.appRole.secretRef` | | Secret containing `secret-id` key |
+
+### Vault Drift Detection
+
+For Vault sources, the provider tracks the KVv2 metadata version number. When you update the secret in Vault (creating a new version), the provider detects the version change and updates the Kubernetes Secret automatically -- no content hashing needed.
+
+## Verify
 
 ```bash
 $ kubectl get remotecluster
-NAME                READY   SYNCED   CLUSTER              VERSION   AGE
-my-remote-cluster   True    True     my-remote-cluster    v1.31.4   5m
+NAME         READY   SYNCED   CLUSTER      VERSION        TYPE   AGE
+my-cluster   True    True     my-cluster   v1.35.1+k3s1   k3s    5m
 
-# With wide output to see the NETWORK column (internalNetworkKey)
+# Wide output shows NETWORK column
 $ kubectl get remotecluster -o wide
-NAME                READY   SYNCED   CLUSTER              VERSION   NETWORK      AGE
-my-remote-cluster   True    True     my-remote-cluster    v1.31.4   10.31.102    5m
+NAME         READY   SYNCED   CLUSTER      VERSION        TYPE   NETWORK      AGE
+my-cluster   True    True     my-cluster   v1.35.1+k3s1   k3s    10.31.102    5m
 
-$ kubectl get secret kubeconfig-my-remote-cluster -n crossplane-system
-NAME                             TYPE     DATA   AGE
-kubeconfig-my-remote-cluster     Opaque   1      5m
+# Extract kubeconfig to local machine
+kubectl get secret kubeconfig-my-cluster \
+  -n crossplane-system -o jsonpath='{.data.kubeconfig}' | base64 -d > ~/.kube/my-cluster
 ```
 
 ## Custom Resource Types
 
 | Kind | Scope | Description |
 |------|-------|-------------|
-| `ProviderConfig` | Namespaced | Git + SOPS/age decryption settings (namespaced) |
-| `ClusterProviderConfig` | Cluster | Git + SOPS/age decryption settings (cluster-scoped) |
-| `RemoteCluster` | Cluster | Managed resource -- decrypts kubeconfig, creates Secret + downstream ProviderConfigs |
+| `ProviderConfig` | Namespaced | Git/Vault + decryption settings (namespaced) |
+| `ClusterProviderConfig` | Cluster | Git/Vault + decryption settings (cluster-scoped) |
+| `RemoteCluster` | Cluster | Managed resource -- reads kubeconfig, creates Secret + downstream ProviderConfigs |
+
+## API Version Labels
+
+The `apiVersions` field on `providerConfigs` controls which downstream ProviderConfig types are created:
+
+| Label | API Group | Kind | Scope |
+|-------|-----------|------|-------|
+| `v1` | `*.crossplane.io` | `ProviderConfig` | Cluster |
+| `v2` | `*.m.crossplane.io` | `ProviderConfig` | Namespaced |
+| `v2-cluster` | `*.m.crossplane.io` | `ClusterProviderConfig` | Cluster |
+
+Use `v2-cluster` for Crossplane v2+ setups.
+
+## Cluster Type Detection
+
+| Distribution | Detection Method |
+|-------------|-----------------|
+| `k3s` | Server version contains `+k3s` |
+| `rke2` | Server version contains `+rke2` |
+| `kind` | Node name suffix + empty or `kind://` providerID |
+| `k8s` | Default fallback |
 
 ## Encrypting a Kubeconfig
 
 ```bash
 # Generate an age key pair
 age-keygen -o age.key
-# Public key: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Encrypt the kubeconfig
 sops encrypt --age age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   kubeconfig.yaml > kubeconfig.enc.yaml
 
-# Store the secret key in Kubernetes
+# Store the secret key in Kubernetes (key field must be named "key")
 kubectl create secret generic age-key \
   --namespace crossplane-system \
-  --from-file=key=age.key
+  --from-literal=key="$(cat age.key | grep AGE-SECRET-KEY)"
 ```

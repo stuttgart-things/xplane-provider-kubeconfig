@@ -225,6 +225,11 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 	if spec.Git == nil {
 		return nil, errors.New("providerConfig must specify git or vault configuration")
 	}
+	return c.connectGit(ctx, spec)
+}
+
+func (c *connector) connectGit(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (managed.ExternalClient, error) {
+	log := ctrl.LoggerFrom(ctx)
 	log.V(1).Info("Resolved ProviderConfig (git)", "gitURL", spec.Git.URL, "branch", spec.Git.Branch)
 
 	gitToken, err := c.resolveGitToken(ctx, spec)
@@ -351,14 +356,35 @@ func contentHash(data []byte) string {
 }
 
 // cloneAndReadFile clones/pulls the Git repo, reads the file at source.path,
-// and decrypts it if an age key is configured.
-// readKubeconfig dispatches to the appropriate source (git or vault).
-func (c *external) readKubeconfig(ctx context.Context, source v1alpha1.RemoteClusterSource) ([]byte, error) {
+// isUpToDate checks if the kubeconfig content has changed (drift detection).
+func (c *external) isUpToDate(ctx context.Context, cr *v1alpha1.RemoteCluster, secret *corev1.Secret) (bool, error) {
+	log := ctrl.LoggerFrom(ctx)
+	source := cr.Spec.ForProvider.Source
+
 	if source.Type == "vault" || c.vaultClient != nil {
-		content, _, err := c.readFromVault(ctx, source.Path, source.Key)
-		return content, err
+		_, version, err := c.readFromVault(ctx, source.Path, source.Key)
+		if err != nil {
+			return false, err
+		}
+		if version != cr.Status.AtProvider.VaultSecretVersion {
+			log.Info("Vault version drift detected", "cluster", cr.GetName(), "storedVersion", cr.Status.AtProvider.VaultSecretVersion, "currentVersion", version)
+			return false, nil
+		}
+		return true, nil
 	}
-	return c.cloneAndReadFile(ctx, source.Path)
+
+	content, err := c.cloneAndReadFile(ctx, source.Path)
+	if err != nil {
+		log.Info("Failed to clone/read git file during observe", "path", source.Path, "error", err)
+		return false, err
+	}
+	currentHash := contentHash(content)
+	storedHash := secret.GetAnnotations()[annotationContentHash]
+	if currentHash != storedHash {
+		log.Info("Content drift detected", "cluster", cr.GetName(), "storedHash", storedHash, "currentHash", currentHash)
+		return false, nil
+	}
+	return true, nil
 }
 
 // readFromVault reads a kubeconfig from Vault KVv2.
@@ -771,33 +797,9 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 	}
 
 	// Detect drift
-	upToDate := true
-	source := cr.Spec.ForProvider.Source
-
-	if source.Type == "vault" || c.vaultClient != nil {
-		// Vault: compare KVv2 metadata version
-		_, version, err := c.readFromVault(ctx, source.Path, source.Key)
-		if err != nil {
-			return managed.ExternalObservation{}, err
-		}
-		storedVersion := cr.Status.AtProvider.VaultSecretVersion
-		if version != storedVersion {
-			log.Info("Vault version drift detected", "cluster", cr.GetName(), "storedVersion", storedVersion, "currentVersion", version)
-			upToDate = false
-		}
-	} else {
-		// Git: compare content hash
-		content, err := c.cloneAndReadFile(ctx, source.Path)
-		if err != nil {
-			log.Info("Failed to clone/read git file during observe", "path", source.Path, "error", err)
-			return managed.ExternalObservation{}, err
-		}
-		currentHash := contentHash(content)
-		storedHash := secret.GetAnnotations()[annotationContentHash]
-		if currentHash != storedHash {
-			log.Info("Content drift detected", "cluster", cr.GetName(), "storedHash", storedHash, "currentHash", currentHash)
-			upToDate = false
-		}
+	upToDate, err := c.isUpToDate(ctx, cr, secret)
+	if err != nil {
+		return managed.ExternalObservation{}, err
 	}
 
 	// Check that all downstream ProviderConfigs exist

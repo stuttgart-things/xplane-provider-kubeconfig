@@ -69,7 +69,7 @@ func (c *Client) ReadKVv2(ctx context.Context, path string) (map[string]interfac
 		return nil, 0, errors.Wrapf(err, "cannot read Vault KVv2 secret at %q", path)
 	}
 	if secret == nil || secret.Data == nil {
-		return nil, 0, fmt.Errorf("Vault KVv2 secret at %q is empty", path)
+		return nil, 0, fmt.Errorf("vault KVv2 secret at %q is empty", path)
 	}
 
 	version := 0
@@ -100,7 +100,7 @@ func AuthKubernetes(role, mountPath string) func(*api.Client) error {
 			return errors.Wrap(err, "Vault Kubernetes auth login failed")
 		}
 		if secret == nil || secret.Auth == nil {
-			return fmt.Errorf("Vault Kubernetes auth returned no token")
+			return fmt.Errorf("vault Kubernetes auth returned no token")
 		}
 
 		c.SetToken(secret.Auth.ClientToken)
@@ -123,7 +123,7 @@ func AuthAppRole(roleID, secretID, mountPath string) func(*api.Client) error {
 			return errors.Wrap(err, "Vault AppRole auth login failed")
 		}
 		if secret == nil || secret.Auth == nil {
-			return fmt.Errorf("Vault AppRole auth returned no token")
+			return fmt.Errorf("vault AppRole auth returned no token")
 		}
 
 		c.SetToken(secret.Auth.ClientToken)
