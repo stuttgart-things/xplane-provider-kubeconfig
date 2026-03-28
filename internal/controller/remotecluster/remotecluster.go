@@ -25,6 +25,7 @@ import (
 	xpv2 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 
+	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,7 @@ import (
 	clusterpkg "github.com/stuttgart-things/provider-kubeconfig/internal/cluster"
 	decryptpkg "github.com/stuttgart-things/provider-kubeconfig/internal/decrypt"
 	gitpkg "github.com/stuttgart-things/provider-kubeconfig/internal/git"
+	vaultpkg "github.com/stuttgart-things/provider-kubeconfig/internal/vault"
 )
 
 const (
@@ -76,6 +78,9 @@ const (
 	defaultSecretNamespace = "crossplane-system"
 	defaultArgoCDNamespace = "argocd"
 
+	errVaultRead          = "cannot read kubeconfig from Vault"
+	errVaultAuth          = "cannot authenticate to Vault"
+	errGetVaultSecret     = "cannot get Vault AppRole secret"
 	errBuildArgoCDSecret  = "cannot build ArgoCD cluster secret"
 	errCreateArgoCDSecret = "cannot create ArgoCD cluster secret"
 	errDeleteArgoCDSecret = "cannot delete ArgoCD cluster secret"
@@ -200,23 +205,43 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (managed.E
 		log.Info("Failed to resolve ProviderConfig", "error", err)
 		return nil, err
 	}
-	log.V(1).Info("Resolved ProviderConfig", "gitURL", spec.Git.URL, "branch", spec.Git.Branch)
+
+	if spec.Vault != nil && spec.Git != nil {
+		return nil, errors.New("providerConfig must specify either git or vault, not both")
+	}
+
+	// Vault source path
+	if spec.Vault != nil {
+		log.V(1).Info("Resolved ProviderConfig (vault)", "address", spec.Vault.Address, "authMethod", spec.Vault.Auth.Method)
+		vc, err := c.resolveVaultClient(ctx, spec)
+		if err != nil {
+			log.Info("Failed to create Vault client", "error", err)
+			return nil, errors.Wrap(err, errVaultAuth)
+		}
+		return &external{kube: c.kube, providerSpec: *spec, vaultClient: vc}, nil
+	}
+
+	// Git source path
+	if spec.Git == nil {
+		return nil, errors.New("providerConfig must specify git or vault configuration")
+	}
+	log.V(1).Info("Resolved ProviderConfig (git)", "gitURL", spec.Git.URL, "branch", spec.Git.Branch)
 
 	gitToken, err := c.resolveGitToken(ctx, spec)
 	if err != nil {
-		log.Info("Failed to resolve Git token", "secretRef", spec.Git.SecretRef, "error", err)
+		log.Info("Failed to resolve Git token", "error", err)
 		return nil, err
 	}
-	if gitToken != "" {
+	if gitToken != "" && spec.Git.SecretRef != nil {
 		log.V(1).Info("Git token resolved", "secretRef", spec.Git.SecretRef.Name)
 	}
 
 	ageKey, err := c.resolveAgeKey(ctx, spec)
 	if err != nil {
-		log.Info("Failed to resolve decryption key", "secretRef", spec.Decryption.SecretRef.Name, "error", err)
+		log.Info("Failed to resolve decryption key", "error", err)
 		return nil, err
 	}
-	if ageKey == "" {
+	if ageKey == "" && spec.Decryption != nil {
 		log.Info("Decryption key is empty — kubeconfig will not be decrypted", "secretRef", spec.Decryption.SecretRef.Name)
 	}
 
@@ -247,8 +272,39 @@ func (c *connector) resolveProviderConfigSpec(ctx context.Context, cr *v1alpha1.
 	}
 }
 
+func (c *connector) resolveVaultClient(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (*vaultpkg.Client, error) {
+	vc := spec.Vault
+
+	var authFn func(*vaultapi.Client) error
+	switch vc.Auth.Method {
+	case "kubernetes":
+		if vc.Auth.Kubernetes == nil {
+			return nil, errors.New("vault auth method is kubernetes but kubernetes config is not set")
+		}
+		authFn = vaultpkg.AuthKubernetes(vc.Auth.Kubernetes.Role, vc.Auth.Kubernetes.MountPath)
+	case "approle":
+		if vc.Auth.AppRole == nil {
+			return nil, errors.New("vault auth method is approle but appRole config is not set")
+		}
+		// Resolve the secret-id from the referenced Secret
+		secret := &corev1.Secret{}
+		if err := c.kube.Get(ctx, types.NamespacedName{
+			Name:      vc.Auth.AppRole.SecretRef.Name,
+			Namespace: vc.Auth.AppRole.SecretRef.Namespace,
+		}, secret); err != nil {
+			return nil, errors.Wrap(err, errGetVaultSecret)
+		}
+		secretID := string(secret.Data["secret-id"])
+		authFn = vaultpkg.AuthAppRole(vc.Auth.AppRole.RoleID, secretID, vc.Auth.AppRole.MountPath)
+	default:
+		return nil, errors.Errorf("unsupported vault auth method: %s", vc.Auth.Method)
+	}
+
+	return vaultpkg.New(ctx, vc.Address, vc.Namespace, vc.MountPath, authFn)
+}
+
 func (c *connector) resolveGitToken(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (string, error) {
-	if spec.Git.SecretRef == nil {
+	if spec.Git == nil || spec.Git.SecretRef == nil {
 		return "", nil
 	}
 	secret := &corev1.Secret{}
@@ -262,6 +318,9 @@ func (c *connector) resolveGitToken(ctx context.Context, spec *apisv1alpha1.Prov
 }
 
 func (c *connector) resolveAgeKey(ctx context.Context, spec *apisv1alpha1.ProviderConfigSpec) (string, error) {
+	if spec.Decryption == nil {
+		return "", nil
+	}
 	decryptRef := spec.Decryption.SecretRef
 	secret := &corev1.Secret{}
 	if err := c.kube.Get(ctx, types.NamespacedName{
@@ -278,6 +337,7 @@ type external struct {
 	providerSpec apisv1alpha1.ProviderConfigSpec
 	gitToken     string
 	ageKey       string
+	vaultClient  *vaultpkg.Client
 }
 
 // secretName returns a deterministic Secret name for the RemoteCluster.
@@ -292,6 +352,42 @@ func contentHash(data []byte) string {
 
 // cloneAndReadFile clones/pulls the Git repo, reads the file at source.path,
 // and decrypts it if an age key is configured.
+// readKubeconfig dispatches to the appropriate source (git or vault).
+func (c *external) readKubeconfig(ctx context.Context, source v1alpha1.RemoteClusterSource) ([]byte, error) {
+	if source.Type == "vault" || c.vaultClient != nil {
+		content, _, err := c.readFromVault(ctx, source.Path, source.Key)
+		return content, err
+	}
+	return c.cloneAndReadFile(ctx, source.Path)
+}
+
+// readFromVault reads a kubeconfig from Vault KVv2.
+func (c *external) readFromVault(ctx context.Context, path, key string) ([]byte, int, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	if key == "" {
+		key = "kubeconfig"
+	}
+
+	data, version, err := c.vaultClient.ReadKVv2(ctx, path)
+	if err != nil {
+		log.Info("Vault KVv2 read failed", "path", path, "error", err)
+		return nil, 0, errors.Wrap(err, errVaultRead)
+	}
+
+	val, ok := data[key]
+	if !ok {
+		return nil, 0, errors.Errorf("key %q not found in Vault secret at %q", key, path)
+	}
+	content, ok := val.(string)
+	if !ok {
+		return nil, 0, errors.Errorf("Vault key %q is not a string", key)
+	}
+
+	log.V(1).Info("Read kubeconfig from Vault", "path", path, "key", key, "version", version)
+	return []byte(content), version, nil
+}
+
 func (c *external) cloneAndReadFile(ctx context.Context, filePath string) ([]byte, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -674,18 +770,34 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.Wrap(err, errGetSecret)
 	}
 
-	// Detect drift: pull latest from Git and compare content hash
+	// Detect drift
 	upToDate := true
-	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
-	if err != nil {
-		log.Info("Failed to clone/read git file during observe", "path", cr.Spec.ForProvider.Source.Path, "error", err)
-		return managed.ExternalObservation{}, err
-	}
-	currentHash := contentHash(content)
-	storedHash := secret.GetAnnotations()[annotationContentHash]
-	if currentHash != storedHash {
-		log.Info("Content drift detected", "cluster", cr.GetName(), "storedHash", storedHash, "currentHash", currentHash)
-		upToDate = false
+	source := cr.Spec.ForProvider.Source
+
+	if source.Type == "vault" || c.vaultClient != nil {
+		// Vault: compare KVv2 metadata version
+		_, version, err := c.readFromVault(ctx, source.Path, source.Key)
+		if err != nil {
+			return managed.ExternalObservation{}, err
+		}
+		storedVersion := cr.Status.AtProvider.VaultSecretVersion
+		if version != storedVersion {
+			log.Info("Vault version drift detected", "cluster", cr.GetName(), "storedVersion", storedVersion, "currentVersion", version)
+			upToDate = false
+		}
+	} else {
+		// Git: compare content hash
+		content, err := c.cloneAndReadFile(ctx, source.Path)
+		if err != nil {
+			log.Info("Failed to clone/read git file during observe", "path", source.Path, "error", err)
+			return managed.ExternalObservation{}, err
+		}
+		currentHash := contentHash(content)
+		storedHash := secret.GetAnnotations()[annotationContentHash]
+		if currentHash != storedHash {
+			log.Info("Content drift detected", "cluster", cr.GetName(), "storedHash", storedHash, "currentHash", currentHash)
+			upToDate = false
+		}
 	}
 
 	// Check that all downstream ProviderConfigs exist
@@ -740,11 +852,22 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 	name := secretName(cr.GetName())
 
-	// Clone/pull Git repo and read the kubeconfig file
-	log.Info("Creating kubeconfig secret", "cluster", cr.GetName(), "path", cr.Spec.ForProvider.Source.Path, "secret", name)
-	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
+	// Read the kubeconfig from the configured source
+	source := cr.Spec.ForProvider.Source
+	log.Info("Creating kubeconfig secret", "cluster", cr.GetName(), "path", source.Path, "sourceType", source.Type, "secret", name)
+
+	var (
+		content      []byte
+		vaultVersion int
+		err          error
+	)
+	if source.Type == "vault" || c.vaultClient != nil {
+		content, vaultVersion, err = c.readFromVault(ctx, source.Path, source.Key)
+	} else {
+		content, err = c.cloneAndReadFile(ctx, source.Path)
+	}
 	if err != nil {
-		log.Info("Failed to clone/read git file", "path", cr.Spec.ForProvider.Source.Path, "error", err)
+		log.Info("Failed to read kubeconfig", "path", source.Path, "error", err)
 		return managed.ExternalCreation{}, err
 	}
 
@@ -778,8 +901,9 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 	log.Info("Created downstream ProviderConfigs", "cluster", cr.GetName(), "count", len(cr.Spec.ForProvider.ProviderConfigs))
 
 	cr.Status.AtProvider = v1alpha1.RemoteClusterObservation{
-		ClusterName: cr.GetName(),
-		SecretRef:   name,
+		ClusterName:        cr.GetName(),
+		SecretRef:          name,
+		VaultSecretVersion: vaultVersion,
 	}
 
 	return managed.ExternalCreation{
@@ -801,8 +925,18 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 	}
 	name := secretName(cr.GetName())
 
-	// Clone/pull Git repo and read the kubeconfig file
-	content, err := c.cloneAndReadFile(ctx, cr.Spec.ForProvider.Source.Path)
+	// Read the kubeconfig from the configured source
+	source := cr.Spec.ForProvider.Source
+	var (
+		content      []byte
+		vaultVersion int
+		err          error
+	)
+	if source.Type == "vault" || c.vaultClient != nil {
+		content, vaultVersion, err = c.readFromVault(ctx, source.Path, source.Key)
+	} else {
+		content, err = c.cloneAndReadFile(ctx, source.Path)
+	}
 	if err != nil {
 		return managed.ExternalUpdate{}, err
 	}
@@ -818,6 +952,7 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		secret.Annotations = make(map[string]string)
 	}
 	secret.Annotations[annotationContentHash] = contentHash(content)
+	cr.Status.AtProvider.VaultSecretVersion = vaultVersion
 
 	if err := c.kube.Update(ctx, secret); err != nil {
 		return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateSecret)
