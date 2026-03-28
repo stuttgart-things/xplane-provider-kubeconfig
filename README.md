@@ -10,8 +10,13 @@ and downstream ProviderConfigs for the remote clusters.
 - **Git-based kubeconfig management** — clones/pulls a Git repo and reads encrypted kubeconfig files
 - **SOPS/age decryption** — decrypts kubeconfigs encrypted with [SOPS](https://github.com/getsops/sops) using [age](https://age-encryption.org/) keys
 - **Drift detection** — compares SHA-256 content hashes on every poll; automatically updates the Secret when the Git file changes
-- **Downstream ProviderConfigs** — automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig resources referencing the kubeconfig Secret
-- **Remote cluster status** — gathers metadata from the remote cluster (Kubernetes version, API endpoint, node count, CIDRs, internal network key) and exposes it in `status.atProvider`
+- **Downstream ProviderConfigs** — automatically creates `provider-kubernetes` and `provider-helm` ProviderConfig/ClusterProviderConfig resources referencing the kubeconfig Secret
+- **ArgoCD cluster secrets** — optionally creates ArgoCD-compatible cluster secrets
+- **Cluster type detection** — auto-detects Kubernetes distribution (`kind`, `k3s`, `rke2`, `k8s`) from server version and node metadata
+- **Remote cluster status** — gathers metadata from the remote cluster (version, type, API endpoint, node count, CIDRs, internal network key) and exposes it in `status.atProvider`
+- **Stale git cache recovery** — automatically re-clones when pull fails with stale objects
+- **Structured logging** — logs key events (git clone, decryption, secret creation, downstream provisioning) for easier debugging
+- **RBAC self-bootstrap** — automatically creates/updates the ClusterRole and ClusterRoleBinding for downstream ProviderConfig management on startup
 
 ## Custom Resource Types
 
@@ -25,42 +30,18 @@ and downstream ProviderConfigs for the remote clusters.
 
 ### 1. Install the Provider
 
-**Via Crossplane xpkg (recommended):**
-
-```shell
-cat <<EOF | kubectl apply -f -
+```yaml
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
 metadata:
   name: provider-kubeconfig
 spec:
-  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:latest
-EOF
-```
-
-**Running the released image (out-of-cluster):**
-
-```shell
-export KUBECONFIG=~/.kube/dev
-export VERSION=v0.8.0
-
-# Install CRDs from the release tag
-for crd in clusterproviderconfigs clusterproviderconfigusages providerconfigs providerconfigusages remoteclusters; do
-  kubectl apply -f \
-    "https://raw.githubusercontent.com/stuttgart-things/xplane-provider-kubeconfig/${VERSION}/package/crds/kubeconfig.stuttgart-things.com_${crd}.yaml"
-done
-
-# Run the provider using the released image
-docker run --rm --network host \
-  -v "${KUBECONFIG}:/kubeconfig:ro" \
-  -e KUBECONFIG=/kubeconfig \
-  ghcr.io/stuttgart-things/provider-kubeconfig:${VERSION} \
-  --debug
+  package: ghcr.io/stuttgart-things/provider-kubeconfig-xpkg:v0.10.0
 ```
 
 ### 2. Create the Secrets
 
-Create the age decryption key Secret:
+Create the age decryption key Secret (the key field must be named `key`):
 
 ```yaml
 apiVersion: v1
@@ -72,7 +53,7 @@ stringData:
   key: AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
-Optionally, create a Git credentials Secret (for private repos):
+For private Git repos, create a token Secret (the field must be named `token`):
 
 ```yaml
 apiVersion: v1
@@ -86,6 +67,8 @@ stringData:
 
 ### 3. Create a ClusterProviderConfig
 
+For a **public** repo (no git token needed):
+
 ```yaml
 apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
 kind: ClusterProviderConfig
@@ -93,17 +76,37 @@ metadata:
   name: default
 spec:
   git:
-    url: https://github.com/my-org/my-cluster-configs.git
+    url: https://github.com/my-org/my-public-repo.git
     branch: main
-    secretRef:                    # optional, for private repos
-      name: git-credentials
-      namespace: crossplane-system
   decryption:
     provider: sops
     secretRef:
       name: age-key
       namespace: crossplane-system
 ```
+
+For a **private** repo:
+
+```yaml
+apiVersion: kubeconfig.stuttgart-things.com/v1alpha1
+kind: ClusterProviderConfig
+metadata:
+  name: my-private-repo
+spec:
+  git:
+    url: https://github.com/my-org/my-private-repo.git
+    branch: main
+    secretRef:
+      name: git-credentials
+      namespace: crossplane-system
+  decryption:
+    provider: sops
+    secretRef:
+      name: age-key-private
+      namespace: crossplane-system
+```
+
+> **Note:** Each repo/key combination needs its own ClusterProviderConfig. Multiple RemoteClusters can reference the same ClusterProviderConfig.
 
 ### 4. Create a RemoteCluster
 
@@ -116,34 +119,67 @@ spec:
   forProvider:
     source:
       path: clusters/my-cluster/kubeconfig.enc.yaml
-    secretNamespace: crossplane-system      # default
-    providerConfigs:                        # optional
+    secretNamespace: crossplane-system
+    providerConfigs:
       - name: my-cluster-kubernetes
         type: provider-kubernetes
+        apiVersions:
+          - v2-cluster
       - name: my-cluster-helm
         type: provider-helm
+        apiVersions:
+          - v2-cluster
   providerConfigRef:
     name: default
     kind: ClusterProviderConfig
 ```
 
-This will:
-1. Clone the Git repo and read `clusters/my-cluster/kubeconfig.enc.yaml`
-2. Decrypt it using the age key
-3. Create a Secret `kubeconfig-my-remote-cluster` in `crossplane-system`
-4. Create downstream ProviderConfigs `my-cluster-kubernetes` and `my-cluster-helm`
-5. Populate status with remote cluster metadata
+#### API Version Labels
+
+The `apiVersions` field controls which downstream ProviderConfig types are created:
+
+| Label | API Group | Kind | Scope |
+|-------|-----------|------|-------|
+| `v1` | `*.crossplane.io` | `ProviderConfig` | Cluster |
+| `v2` | `*.m.crossplane.io` | `ProviderConfig` | Namespaced |
+| `v2-cluster` | `*.m.crossplane.io` | `ClusterProviderConfig` | Cluster |
+
+Use `v2-cluster` for Crossplane v2+ setups.
+
+### 5. Verify
 
 ```shell
 $ kubectl get remotecluster
-NAME                READY   SYNCED   CLUSTER              VERSION   AGE
-my-remote-cluster   True    True     my-remote-cluster    v1.31.4   5m
+NAME                READY   SYNCED   CLUSTER              VERSION        TYPE   AGE
+my-remote-cluster   True    True     my-remote-cluster    v1.35.1+k3s1   k3s    5m
 
 # With wide output to see the NETWORK column
 $ kubectl get remotecluster -o wide
-NAME                READY   SYNCED   CLUSTER              VERSION   NETWORK      AGE
-my-remote-cluster   True    True     my-remote-cluster    v1.31.4   10.31.102    5m
+NAME                READY   SYNCED   CLUSTER              VERSION        TYPE   NETWORK      AGE
+my-remote-cluster   True    True     my-remote-cluster    v1.35.1+k3s1   k3s    10.31.102    5m
 ```
+
+### 6. Use the Kubeconfig
+
+Extract the decrypted kubeconfig to your local machine:
+
+```shell
+kubectl get secret kubeconfig-my-remote-cluster \
+  -n crossplane-system -o jsonpath='{.data.kubeconfig}' | base64 -d > ~/.kube/my-remote-cluster
+
+kubectl --kubeconfig ~/.kube/my-remote-cluster get nodes
+```
+
+## Cluster Type Detection
+
+The provider auto-detects the Kubernetes distribution and writes it to `status.atProvider.clusterType`:
+
+| Distribution | Detection Method |
+|-------------|-----------------|
+| `k3s` | Server version contains `+k3s` |
+| `rke2` | Server version contains `+rke2` |
+| `kind` | Node name ends with `-control-plane` or `-worker`, and providerID is empty or starts with `kind://` |
+| `k8s` | Default fallback |
 
 ## Encrypting a Kubeconfig with SOPS/age
 
@@ -156,11 +192,20 @@ age-keygen -o age.key
 sops encrypt --age age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
   kubeconfig.yaml > kubeconfig.enc.yaml
 
-# Store the secret key in Kubernetes
+# Store the secret key in Kubernetes (key field must be named "key")
 kubectl create secret generic age-key \
   --namespace crossplane-system \
-  --from-file=key=age.key
+  --from-literal=key="$(cat age.key | grep AGE-SECRET-KEY)"
 ```
+
+## RBAC
+
+The provider bootstraps its own RBAC on startup to manage downstream ProviderConfigs. It creates:
+
+- **ClusterRole** `provider-kubeconfig-downstream` — permissions for `providerconfigs` and `clusterproviderconfigs` in `kubernetes.m.crossplane.io`, `helm.m.crossplane.io`, and the legacy `*.crossplane.io` APIs
+- **ClusterRoleBinding** `provider-kubeconfig-downstream` — binds to the provider's service account (auto-detected from the pod)
+
+This is automatic — no manual RBAC setup required. On provider upgrades (new pod/SA name), the bootstrap appends the new SA to the binding.
 
 ## Building
 
@@ -181,15 +226,6 @@ make reviewable
 
 # Build the provider binary and Docker image
 make build
-```
-
-### Build and Push the Crossplane Package
-
-```shell
-# Build the xpkg (includes Docker image)
-make build
-
-# The image is tagged as provider-kubeconfig:<version>
 ```
 
 ### Local Development
@@ -216,27 +252,24 @@ apis/
   kubeconfig/
     v1alpha1/                # RemoteCluster managed resource type
 internal/
-  cluster/                   # Remote cluster info gathering (version, nodes, CIDRs)
+  cluster/                   # Remote cluster info gathering (version, type, nodes, CIDRs)
   controller/
     config/                  # ProviderConfig controller
     remotecluster/           # RemoteCluster reconciler
     kubeconfig.go            # Controller registration (SetupGated)
   decrypt/                   # SOPS/age decryption
-  git/                       # Git clone/pull with caching
+  git/                       # Git clone/pull with caching and stale recovery
+  rbac/                      # RBAC self-bootstrap for downstream access
 package/
   crds/                      # Generated CRDs
   crossplane.yaml            # Crossplane package metadata
-examples/
-  provider/                  # ClusterProviderConfig example
-  sample/                    # RemoteCluster example
-  testdata/                  # Test kubeconfigs (plain + encrypted)
 ```
 
 ## Provider Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--debug` / `-d` | `false` | Enable debug logging |
+| `--debug` / `-d` | `false` | Enable debug logging (shows V(1) verbose logs) |
 | `--leader-election` / `-l` | `false` | Enable leader election for HA |
 | `--poll` | `1m` | How often to check each resource for drift |
 | `--sync` / `-s` | `1h` | Controller manager sync period |
