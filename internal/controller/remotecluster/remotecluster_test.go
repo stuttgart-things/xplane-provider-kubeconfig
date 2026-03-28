@@ -384,8 +384,7 @@ func TestDeleteCleansUpDownstreamProviderConfigs(t *testing.T) {
 			return nil
 		},
 		MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-			switch l := list.(type) {
-			case *unstructured.UnstructuredList:
+			if l, ok := list.(*unstructured.UnstructuredList); ok {
 				item := unstructured.Unstructured{}
 				item.SetName("stale-pc")
 				l.Items = []unstructured.Unstructured{item}
@@ -745,8 +744,7 @@ func TestEnsureDownstreamProviderConfigs(t *testing.T) {
 				return nil
 			},
 			MockList: func(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-				switch l := list.(type) {
-				case *unstructured.UnstructuredList:
+				if l, ok := list.(*unstructured.UnstructuredList); ok {
 					stale := unstructured.Unstructured{}
 					stale.SetName("stale-old-pc")
 					l.Items = []unstructured.Unstructured{stale}

@@ -334,8 +334,8 @@ func buildDownstreamProviderConfig(meta providerConfigMeta, pcName, secretName, 
 
 // argoCDClusterConfig is the JSON config block for an ArgoCD cluster secret.
 type argoCDClusterConfig struct {
-	BearerToken     string              `json:"bearerToken"`
-	TLSClientConfig argoCDTLSConfig     `json:"tlsClientConfig"`
+	BearerToken     string          `json:"bearerToken"`
+	TLSClientConfig argoCDTLSConfig `json:"tlsClientConfig"`
 }
 
 // argoCDTLSConfig holds TLS settings for the ArgoCD cluster config.
@@ -355,13 +355,13 @@ func buildArgoCDClusterSecret(name, namespace, crName string, kubeconfig []byte)
 	argoConfig := argoCDClusterConfig{
 		BearerToken: cfg.BearerToken,
 		TLSClientConfig: argoCDTLSConfig{
-			Insecure: cfg.TLSClientConfig.Insecure,
+			Insecure: cfg.Insecure,
 		},
 	}
 
 	// Include CA data if present and not insecure
-	if len(cfg.TLSClientConfig.CAData) > 0 && !cfg.TLSClientConfig.Insecure {
-		argoConfig.TLSClientConfig.CAData = string(cfg.TLSClientConfig.CAData)
+	if len(cfg.CAData) > 0 && !cfg.Insecure {
+		argoConfig.TLSClientConfig.CAData = string(cfg.CAData)
 	}
 
 	configJSON, err := json.Marshal(argoConfig)
