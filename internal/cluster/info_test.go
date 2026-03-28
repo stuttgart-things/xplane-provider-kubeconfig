@@ -19,6 +19,11 @@ package cluster
 import (
 	"context"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestGatherInvalidKubeconfig(t *testing.T) {
@@ -57,5 +62,82 @@ users:
 	_, err := Gather(context.Background(), kc)
 	if err == nil {
 		t.Fatal("expected error for unreachable cluster, got nil")
+	}
+}
+
+func TestDetectClusterType(t *testing.T) {
+	cases := map[string]struct {
+		serverVersion string
+		nodes         []corev1.Node
+		want          string
+	}{
+		"K3sVersion": {
+			serverVersion: "v1.31.4+k3s1",
+			want:          "k3s",
+		},
+		"RKE2Version": {
+			serverVersion: "v1.31.4+rke2r1",
+			want:          "rke2",
+		},
+		"KindCluster": {
+			serverVersion: "v1.35.0",
+			nodes: []corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "my-cluster-control-plane"},
+					Spec:       corev1.NodeSpec{ProviderID: ""},
+				},
+			},
+			want: "kind",
+		},
+		"KindWorkerNode": {
+			serverVersion: "v1.35.0",
+			nodes: []corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-worker"},
+					Spec:       corev1.NodeSpec{ProviderID: ""},
+				},
+			},
+			want: "kind",
+		},
+		"CloudNodeNotKind": {
+			serverVersion: "v1.35.0",
+			nodes: []corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "pool-control-plane"},
+					Spec:       corev1.NodeSpec{ProviderID: "aws://us-east-1/i-abc123"},
+				},
+			},
+			want: "k8s",
+		},
+		"GenericK8s": {
+			serverVersion: "v1.35.0",
+			nodes: []corev1.Node{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+				},
+			},
+			want: "k8s",
+		},
+		"NoNodes": {
+			serverVersion: "v1.35.0",
+			want:          "k8s",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			objs := make([]corev1.Node, len(tc.nodes))
+			copy(objs, tc.nodes)
+
+			cs := fake.NewSimpleClientset()
+			for i := range objs {
+				_, _ = cs.CoreV1().Nodes().Create(context.Background(), &objs[i], metav1.CreateOptions{})
+			}
+
+			got := detectClusterType(tc.serverVersion, context.Background(), cs)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("-want, +got:\n%s", diff)
+			}
+		})
 	}
 }

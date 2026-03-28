@@ -37,6 +37,7 @@ type Info struct {
 	NodeCIDRs          []string
 	NodeCount          int
 	InternalNetworkKey string
+	ClusterType        string
 }
 
 // Gather connects to the remote cluster using the provided kubeconfig bytes
@@ -63,6 +64,8 @@ func Gather(ctx context.Context, kubeconfig []byte) (*Info, error) {
 	}
 
 	gatherServiceCIDR(ctx, cs, info)
+
+	info.ClusterType = detectClusterType(info.ServerVersion, ctx, cs)
 
 	return info, nil
 }
@@ -121,6 +124,35 @@ func internalNetworkKey(nodes []corev1.Node) string {
 		}
 	}
 	return ""
+}
+
+// detectClusterType determines the Kubernetes distribution from the server
+// version string and node metadata. Returns one of: kind, k3s, rke2, k8s.
+func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.Interface) string {
+	// Check server version for distribution markers
+	if strings.Contains(serverVersion, "+k3s") {
+		return "k3s"
+	}
+	if strings.Contains(serverVersion, "+rke2") {
+		return "rke2"
+	}
+
+	// Check node names/labels for kind clusters
+	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, node := range nodes.Items {
+			// kind nodes have names like "{cluster}-control-plane" or "{cluster}-worker"
+			if strings.HasSuffix(node.Name, "-control-plane") || strings.HasSuffix(node.Name, "-worker") {
+				// Verify by checking the container runtime — kind uses containerd
+				// and the providerID is empty (no cloud provider)
+				if node.Spec.ProviderID == "" {
+					return "kind"
+				}
+			}
+		}
+	}
+
+	return "k8s"
 }
 
 func gatherServiceCIDR(ctx context.Context, cs kubernetes.Interface, info *Info) {
