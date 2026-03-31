@@ -14,7 +14,7 @@ require (
 	github.com/getsops/sops/v3 v3.12.2
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/google/go-cmp v0.7.0
-	github.com/hashicorp/vault/api v1.22.0
+	github.com/hashicorp/vault/api v1.23.0
 	github.com/pkg/errors v0.9.1
 	google.golang.org/grpc v1.79.3
 	k8s.io/api v0.35.3
