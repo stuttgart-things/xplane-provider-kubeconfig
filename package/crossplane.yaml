@@ -36,6 +36,10 @@ spec:
       - apiGroups: ["rbac.authorization.k8s.io"]
         resources: ["clusterroles", "clusterrolebindings"]
         verbs: ["create"]
+      # Kubeconfig + credential Secrets (create, read, update, delete)
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
       # Detect own pod for service account discovery
       - apiGroups: [""]
         resources: ["pods"]
