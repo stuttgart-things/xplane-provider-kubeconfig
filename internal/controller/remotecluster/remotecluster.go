@@ -149,7 +149,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithPollInterval(o.PollInterval),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))), //nolint:staticcheck // crossplane runtime requires old event API
 	}
 
 	if o.Features.Enabled(feature.EnableBetaManagementPolicies) {
@@ -475,7 +475,7 @@ func buildDownstreamProviderConfig(meta providerConfigMeta, pcName, secretName, 
 
 // argoCDClusterConfig is the JSON config block for an ArgoCD cluster secret.
 type argoCDClusterConfig struct {
-	BearerToken     string          `json:"bearerToken"`
+	BearerToken     string          `json:"bearerToken"` //nolint:gosec // ArgoCD cluster secret schema requires this field name
 	TLSClientConfig argoCDTLSConfig `json:"tlsClientConfig"`
 }
 
