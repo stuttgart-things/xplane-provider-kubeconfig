@@ -505,7 +505,7 @@ func buildArgoCDClusterSecret(name, namespace, crName string, kubeconfig []byte)
 		argoConfig.TLSClientConfig.CAData = string(cfg.CAData)
 	}
 
-	configJSON, err := json.Marshal(argoConfig)
+	configJSON, err := json.Marshal(argoConfig) //nolint:gosec // G117: BearerToken field name required by ArgoCD cluster secret schema
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot marshal ArgoCD cluster config")
 	}
