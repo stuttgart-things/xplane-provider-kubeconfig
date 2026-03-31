@@ -121,16 +121,17 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName, ns s
 		return err
 	}
 
-	for _, s := range crb.Subjects {
-		if s.Kind == "ServiceAccount" && s.Name == saName && s.Namespace == ns {
-			return nil // already bound
-		}
-	}
-	crb.Subjects = append(crb.Subjects, rbacv1.Subject{
+	// Replace all subjects with the current SA. Only one provider revision
+	// is active at a time, so stale SAs from previous upgrades are removed.
+	desired := []rbacv1.Subject{{
 		Kind:      "ServiceAccount",
 		Name:      saName,
 		Namespace: ns,
-	})
+	}}
+	if len(crb.Subjects) == 1 && crb.Subjects[0] == desired[0] {
+		return nil // already correct
+	}
+	crb.Subjects = desired
 	return c.Update(ctx, crb)
 }
 
