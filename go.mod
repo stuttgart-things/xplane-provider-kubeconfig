@@ -79,7 +79,7 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cncf/xds/go v0.0.0-20251210132809-ee656c7534f5 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
-	github.com/crossplane/crossplane-tools v0.0.0-20250731192036-00d407d8b7ec // indirect
+	github.com/crossplane/crossplane-tools v0.0.0-20251017183449-dd4517244339 // indirect
 	github.com/cyphar/filepath-securejoin v0.4.1 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
