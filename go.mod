@@ -15,7 +15,7 @@ require (
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/google/go-cmp v0.7.0
 	github.com/pkg/errors v0.9.1
-	google.golang.org/grpc v1.79.1
+	google.golang.org/grpc v1.79.3
 	k8s.io/api v0.33.3
 	k8s.io/apiextensions-apiserver v0.33.0
 	k8s.io/apimachinery v0.33.3
