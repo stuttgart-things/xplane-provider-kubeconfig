@@ -824,7 +824,8 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		obs.NodeCount = info.NodeCount
 		obs.InternalNetworkKey = info.InternalNetworkKey
 		obs.ClusterType = info.ClusterType
-		log.V(1).Info("Gathered cluster info", "cluster", cr.GetName(), "version", info.ServerVersion, "type", info.ClusterType, "nodes", info.NodeCount)
+		obs.KindClusterName = info.KindClusterName
+		log.V(1).Info("Gathered cluster info", "cluster", cr.GetName(), "version", info.ServerVersion, "type", info.ClusterType, "kindName", info.KindClusterName, "nodes", info.NodeCount)
 	} else {
 		log.V(1).Info("Could not gather cluster info (target may be unreachable)", "cluster", cr.GetName(), "error", err)
 	}

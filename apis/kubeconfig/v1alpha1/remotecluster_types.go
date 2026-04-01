@@ -95,6 +95,10 @@ type RemoteClusterObservation struct {
 	InternalNetworkKey string `json:"internalNetworkKey,omitempty"`
 	// ClusterType is the detected Kubernetes distribution (kind, k3s, rke2, k8s).
 	ClusterType string `json:"clusterType,omitempty"`
+	// KindClusterName is the actual kind cluster name extracted from node names
+	// (e.g. "dev" from "dev-control-plane"). Only set for kind clusters.
+	// +optional
+	KindClusterName string `json:"kindClusterName,omitempty"`
 	// VaultSecretVersion is the KVv2 metadata version, used for drift detection.
 	// +optional
 	VaultSecretVersion int `json:"vaultSecretVersion,omitempty"`

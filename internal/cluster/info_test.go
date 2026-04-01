@@ -69,15 +69,16 @@ func TestDetectClusterType(t *testing.T) {
 	cases := map[string]struct {
 		serverVersion string
 		nodes         []corev1.Node
-		want          string
+		wantType      string
+		wantKindName  string
 	}{
 		"K3sVersion": {
 			serverVersion: "v1.31.4+k3s1",
-			want:          "k3s",
+			wantType:      "k3s",
 		},
 		"RKE2Version": {
 			serverVersion: "v1.31.4+rke2r1",
-			want:          "rke2",
+			wantType:      "rke2",
 		},
 		"KindCluster": {
 			serverVersion: "v1.35.0",
@@ -87,7 +88,8 @@ func TestDetectClusterType(t *testing.T) {
 					Spec:       corev1.NodeSpec{ProviderID: ""},
 				},
 			},
-			want: "kind",
+			wantType:     "kind",
+			wantKindName: "my-cluster",
 		},
 		"KindWorkerNode": {
 			serverVersion: "v1.35.0",
@@ -97,7 +99,7 @@ func TestDetectClusterType(t *testing.T) {
 					Spec:       corev1.NodeSpec{ProviderID: ""},
 				},
 			},
-			want: "kind",
+			wantType: "kind",
 		},
 		"KindWithProviderID": {
 			serverVersion: "v1.35.0",
@@ -107,7 +109,8 @@ func TestDetectClusterType(t *testing.T) {
 					Spec:       corev1.NodeSpec{ProviderID: "kind://docker/dev/dev-control-plane"},
 				},
 			},
-			want: "kind",
+			wantType:     "kind",
+			wantKindName: "dev",
 		},
 		"CloudNodeNotKind": {
 			serverVersion: "v1.35.0",
@@ -117,7 +120,7 @@ func TestDetectClusterType(t *testing.T) {
 					Spec:       corev1.NodeSpec{ProviderID: "aws://us-east-1/i-abc123"},
 				},
 			},
-			want: "k8s",
+			wantType: "k8s",
 		},
 		"GenericK8s": {
 			serverVersion: "v1.35.0",
@@ -126,11 +129,11 @@ func TestDetectClusterType(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
 				},
 			},
-			want: "k8s",
+			wantType: "k8s",
 		},
 		"NoNodes": {
 			serverVersion: "v1.35.0",
-			want:          "k8s",
+			wantType:      "k8s",
 		},
 	}
 
@@ -144,9 +147,12 @@ func TestDetectClusterType(t *testing.T) {
 				_, _ = cs.CoreV1().Nodes().Create(context.Background(), &objs[i], metav1.CreateOptions{})
 			}
 
-			got := detectClusterType(tc.serverVersion, context.Background(), cs)
-			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("-want, +got:\n%s", diff)
+			gotType, gotKindName := detectClusterType(tc.serverVersion, context.Background(), cs)
+			if diff := cmp.Diff(tc.wantType, gotType); diff != "" {
+				t.Errorf("type -want, +got:\n%s", diff)
+			}
+			if diff := cmp.Diff(tc.wantKindName, gotKindName); diff != "" {
+				t.Errorf("kindName -want, +got:\n%s", diff)
 			}
 		})
 	}
