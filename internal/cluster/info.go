@@ -38,6 +38,7 @@ type Info struct {
 	NodeCount          int
 	InternalNetworkKey string
 	ClusterType        string
+	KindClusterName    string
 }
 
 // Gather connects to the remote cluster using the provided kubeconfig bytes
@@ -65,7 +66,7 @@ func Gather(ctx context.Context, kubeconfig []byte) (*Info, error) {
 
 	gatherServiceCIDR(ctx, cs, info)
 
-	info.ClusterType = detectClusterType(info.ServerVersion, ctx, cs)
+	info.ClusterType, info.KindClusterName = detectClusterType(info.ServerVersion, ctx, cs)
 
 	return info, nil
 }
@@ -127,14 +128,15 @@ func internalNetworkKey(nodes []corev1.Node) string {
 }
 
 // detectClusterType determines the Kubernetes distribution from the server
-// version string and node metadata. Returns one of: kind, k3s, rke2, k8s.
-func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.Interface) string {
+// version string and node metadata. Returns the type (kind, k3s, rke2, k8s)
+// and, for kind clusters, the cluster name extracted from node names.
+func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.Interface) (string, string) {
 	// Check server version for distribution markers
 	if strings.Contains(serverVersion, "+k3s") {
-		return "k3s"
+		return "k3s", ""
 	}
 	if strings.Contains(serverVersion, "+rke2") {
-		return "rke2"
+		return "rke2", ""
 	}
 
 	// Check node names/labels for kind clusters
@@ -142,16 +144,22 @@ func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.
 	if err == nil {
 		for _, node := range nodes.Items {
 			// kind nodes have names like "{cluster}-control-plane" or "{cluster}-worker"
-			if strings.HasSuffix(node.Name, "-control-plane") || strings.HasSuffix(node.Name, "-worker") {
+			if strings.HasSuffix(node.Name, "-control-plane") {
 				// kind sets providerID to "kind://..." or leaves it empty
 				if node.Spec.ProviderID == "" || strings.HasPrefix(node.Spec.ProviderID, "kind://") {
-					return "kind"
+					kindName := strings.TrimSuffix(node.Name, "-control-plane")
+					return "kind", kindName
+				}
+			}
+			if strings.HasSuffix(node.Name, "-worker") {
+				if node.Spec.ProviderID == "" || strings.HasPrefix(node.Spec.ProviderID, "kind://") {
+					return "kind", ""
 				}
 			}
 		}
 	}
 
-	return "k8s"
+	return "k8s", ""
 }
 
 func gatherServiceCIDR(ctx context.Context, cs kubernetes.Interface, info *Info) {
