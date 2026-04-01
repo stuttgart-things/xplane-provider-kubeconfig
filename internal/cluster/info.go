@@ -142,24 +142,34 @@ func detectClusterType(serverVersion string, ctx context.Context, cs kubernetes.
 	// Check node names/labels for kind clusters
 	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err == nil {
-		for _, node := range nodes.Items {
-			// kind nodes have names like "{cluster}-control-plane" or "{cluster}-worker"
-			if strings.HasSuffix(node.Name, "-control-plane") {
-				// kind sets providerID to "kind://..." or leaves it empty
-				if node.Spec.ProviderID == "" || strings.HasPrefix(node.Spec.ProviderID, "kind://") {
-					kindName := strings.TrimSuffix(node.Name, "-control-plane")
-					return "kind", kindName
-				}
-			}
-			if strings.HasSuffix(node.Name, "-worker") {
-				if node.Spec.ProviderID == "" || strings.HasPrefix(node.Spec.ProviderID, "kind://") {
-					return "kind", ""
-				}
-			}
+		if clusterType, kindName := detectKindCluster(nodes.Items); clusterType != "" {
+			return clusterType, kindName
 		}
 	}
 
 	return "k8s", ""
+}
+
+// detectKindCluster checks whether any node matches the kind naming convention
+// and returns ("kind", clusterName) or ("", "") if no match is found.
+func detectKindCluster(nodes []corev1.Node) (string, string) {
+	for _, node := range nodes {
+		if !isKindProviderID(node.Spec.ProviderID) {
+			continue
+		}
+		if strings.HasSuffix(node.Name, "-control-plane") {
+			return "kind", strings.TrimSuffix(node.Name, "-control-plane")
+		}
+		if strings.HasSuffix(node.Name, "-worker") {
+			return "kind", ""
+		}
+	}
+	return "", ""
+}
+
+// isKindProviderID returns true if the providerID is empty or kind-prefixed.
+func isKindProviderID(providerID string) bool {
+	return providerID == "" || strings.HasPrefix(providerID, "kind://")
 }
 
 func gatherServiceCIDR(ctx context.Context, cs kubernetes.Interface, info *Info) {
