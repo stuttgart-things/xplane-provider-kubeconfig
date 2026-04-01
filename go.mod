@@ -12,7 +12,7 @@ require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/crossplane/crossplane-runtime/v2 v2.2.0
 	github.com/getsops/sops/v3 v3.12.2
-	github.com/go-git/go-git/v5 v5.17.1
+	github.com/go-git/go-git/v5 v5.17.2
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/pkg/errors v0.9.1
