@@ -16,7 +16,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/vault/api v1.23.0
 	github.com/pkg/errors v0.9.1
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.80.0
 	k8s.io/api v0.35.3
 	k8s.io/apiextensions-apiserver v0.35.0
 	k8s.io/apimachinery v0.35.3
@@ -45,7 +45,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.4.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.6.0 // indirect
-	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.30.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.55.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
