@@ -1,6 +1,6 @@
 module github.com/stuttgart-things/provider-kubeconfig
 
-go 1.25.0
+go 1.25.9
 
 toolchain go1.26.2
 
@@ -10,7 +10,7 @@ tool github.com/crossplane/crossplane-tools/cmd/angryjet
 
 require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
-	github.com/crossplane/crossplane-runtime/v2 v2.2.0
+	github.com/crossplane/crossplane-runtime/v2 v2.2.1
 	github.com/getsops/sops/v3 v3.12.2
 	github.com/go-git/go-git/v5 v5.17.2
 	github.com/google/go-cmp v0.7.0
